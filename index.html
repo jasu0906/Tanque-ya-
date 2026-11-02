@@ -1,0 +1,131 @@
+<!doctype html>
+<html lang="es">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <title>Tanque ya · Combustible en Venezuela</title>
+  <meta name="description" content="Encuentra estaciones de servicio en Venezuela, mira qué combustible tienen, a qué precio y cuánta cola hay, y paga desde el teléfono.">
+  <meta name="theme-color" content="#0f766e">
+  <link rel="manifest" href="manifest.webmanifest">
+  <link rel="icon" href="assets/img/icon.svg" type="image/svg+xml">
+  <link rel="apple-touch-icon" href="assets/img/icon-192.png">
+  <link rel="stylesheet" href="vendor/leaflet/leaflet.css">
+  <link rel="stylesheet" href="vendor/markercluster/MarkerCluster.css">
+  <link rel="stylesheet" href="assets/css/app.css">
+</head>
+<body>
+  <header class="topbar">
+    <a class="brand" href="#mapa" aria-label="Tanque ya, inicio">
+      <img src="assets/img/icon.svg" alt="" width="32" height="32">
+      <span class="brand__name">Tanque <b>ya</b></span>
+    </a>
+    <nav class="tabs" aria-label="Secciones">
+      <a href="#mapa" class="tab" data-tab="mapa">
+        <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M9 4 3 6v14l6-2 6 2 6-2V4l-6 2-6-2Zm0 2.2 6 2v11.6l-6-2V6.2Z"/></svg>
+        <span>Mapa</span>
+      </a>
+      <a href="#pagos" class="tab" data-tab="pagos">
+        <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3 6a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2v12a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V6Zm2 3v9h14V9H5Zm0-3v1h14V6H5Zm2 8h5v2H7v-2Z"/></svg>
+        <span>Mis pagos</span>
+      </a>
+      <a href="#gerentes" class="tab" data-tab="gerentes">
+        <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 21V5a2 2 0 0 1 2-2h7a2 2 0 0 1 2 2v6h1a2 2 0 0 1 2 2v4a1 1 0 0 0 2 0V9.4l-2.7-2.7 1.4-1.4L22 8.6V17a3 3 0 0 1-6 0v-4h-1v8H4Zm2-16v5h7V5H6Z"/></svg>
+        <span>Gerentes</span>
+      </a>
+    </nav>
+    <div class="topbar__right">
+      <button class="chip chip--ghost" id="dataChip" type="button" title="Origen de los datos">
+        <span class="dot" id="dataDot"></span><span id="dataLabel">Cargando…</span>
+      </button>
+      <button class="btn btn--ghost btn--sm hide-sm" id="aboutBtn" type="button">Inversionistas</button>
+      <button class="btn btn--primary btn--sm" id="installBtn" type="button" hidden>Instalar</button>
+    </div>
+  </header>
+
+  <!-- ===================== MAPA ===================== -->
+  <main id="view-mapa" class="view view--map" data-view="mapa">
+    <div id="map" aria-label="Mapa de estaciones de servicio de Venezuela"></div>
+
+    <div class="map-legend" aria-hidden="true">
+      <span><i class="lg lg--ok"></i>Hay combustible</span>
+      <span><i class="lg lg--warn"></i>Poco o cola larga</span>
+      <span><i class="lg lg--out"></i>Sin combustible / cerrada</span>
+      <span><i class="lg lg--na"></i>Sin reportar</span>
+    </div>
+
+    <button class="fab" id="locateBtn" type="button" aria-label="Estaciones cerca de mí" title="Cerca de mí">
+      <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M11 2h2v2.1A8 8 0 0 1 19.9 11H22v2h-2.1A8 8 0 0 1 13 19.9V22h-2v-2.1A8 8 0 0 1 4.1 13H2v-2h2.1A8 8 0 0 1 11 4.1V2Zm1 4a6 6 0 1 0 0 12 6 6 0 0 0 0-12Zm0 3a3 3 0 1 1 0 6 3 3 0 0 1 0-6Z"/></svg>
+    </button>
+
+    <aside class="panel" id="panel" aria-label="Estaciones">
+      <button class="panel__handle" id="panelHandle" type="button" aria-label="Mostrar u ocultar la lista"></button>
+
+      <section class="panel__list" id="listPane">
+        <div class="search">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M10 3a7 7 0 0 1 5.6 11.2l5.1 5.1-1.4 1.4-5.1-5.1A7 7 0 1 1 10 3Zm0 2a5 5 0 1 0 0 10 5 5 0 0 0 0-10Z"/></svg>
+          <input id="searchInput" type="search" placeholder="Buscar estación, ciudad o calle" autocomplete="off" aria-label="Buscar estación">
+        </div>
+        <div class="filters" role="group" aria-label="Filtros">
+          <button class="chip" data-filter="gas" type="button" aria-pressed="false">Con gasolina</button>
+          <button class="chip" data-filter="diesel" type="button" aria-pressed="false">Con diésel</button>
+          <button class="chip" data-filter="noqueue" type="button" aria-pressed="false">Poca cola</button>
+          <button class="chip" data-filter="pay" type="button" aria-pressed="false">Acepta pago en app</button>
+        </div>
+        <div class="list-head">
+          <h2 id="listTitle">Estaciones en esta zona</h2>
+          <span class="muted" id="listCount"></span>
+        </div>
+        <ul class="station-list" id="stationList" aria-live="polite"></ul>
+      </section>
+
+      <section class="panel__detail" id="detailPane" hidden></section>
+    </aside>
+  </main>
+
+  <!-- ===================== MIS PAGOS ===================== -->
+  <main id="view-pagos" class="view view--page" data-view="pagos" hidden>
+    <div class="page">
+      <div class="page__head">
+        <div>
+          <h1>Mis pagos</h1>
+          <p class="muted">Muestra el código QR al despachador para que te sirva el combustible.</p>
+        </div>
+        <div class="wallet">
+          <span class="muted">Saldo Tanque ya</span>
+          <strong id="walletBalance">$0,00</strong>
+          <button class="btn btn--ghost btn--sm" id="topupBtn" type="button">Recargar</button>
+        </div>
+      </div>
+      <div id="receiptList" class="receipts"></div>
+    </div>
+  </main>
+
+  <!-- ===================== GERENTES ===================== -->
+  <main id="view-gerentes" class="view view--page" data-view="gerentes" hidden>
+    <div class="page" id="managerRoot"></div>
+  </main>
+
+  <!-- ===================== MODAL ===================== -->
+  <div class="modal" id="modal" hidden>
+    <div class="modal__backdrop" data-close></div>
+    <div class="modal__card" role="dialog" aria-modal="true" aria-labelledby="modalTitle">
+      <button class="modal__x" type="button" data-close aria-label="Cerrar">
+        <svg viewBox="0 0 24 24" aria-hidden="true"><path d="m6.4 5 5.6 5.6L17.6 5 19 6.4 13.4 12l5.6 5.6-1.4 1.4-5.6-5.6L6.4 19 5 17.6l5.6-5.6L5 6.4 6.4 5Z"/></svg>
+      </button>
+      <div id="modalBody"></div>
+    </div>
+  </div>
+
+  <div class="toast" id="toast" role="status" aria-live="polite" hidden></div>
+
+  <div class="demo-ribbon" id="demoRibbon">Demostración · los pagos son simulados</div>
+
+  <script src="vendor/leaflet/leaflet.js"></script>
+  <script src="vendor/markercluster/leaflet.markercluster.js"></script>
+  <script src="vendor/qrcode/qrcode.js"></script>
+  <script src="data/venezuela-outline.js"></script>
+  <script src="data/demo-stations.js"></script>
+  <script src="assets/js/store.js"></script>
+  <script src="assets/js/app.js"></script>
+</body>
+</html>

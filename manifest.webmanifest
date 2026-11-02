@@ -1,0 +1,18 @@
+{
+  "name": "Tanque ya · Combustible en Venezuela",
+  "short_name": "Tanque ya",
+  "description": "Dónde hay combustible, a qué precio y cuánta cola. Paga desde el teléfono.",
+  "lang": "es",
+  "start_url": "./#mapa",
+  "scope": "./",
+  "display": "standalone",
+  "orientation": "portrait",
+  "background_color": "#f4f6f5",
+  "theme_color": "#0f766e",
+  "icons": [
+    { "src": "assets/img/icon-192.png", "sizes": "192x192", "type": "image/png" },
+    { "src": "assets/img/icon-512.png", "sizes": "512x512", "type": "image/png" },
+    { "src": "assets/img/icon-512.png", "sizes": "512x512", "type": "image/png", "purpose": "maskable" },
+    { "src": "assets/img/icon.svg", "sizes": "any", "type": "image/svg+xml" }
+  ]
+}
