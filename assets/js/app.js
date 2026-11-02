@@ -63,6 +63,9 @@
   };
 
   function setStations(list, source) {
+    var ids = {};
+    list.forEach(function (s) { ids[s.id] = true; });
+    list = list.concat(S.registeredStations().filter(function (s) { return !ids[s.id]; }));
     app.stations = list;
     app.source = source;
     app.byId = {};
@@ -75,6 +78,7 @@
     var n = nf0.format(app.stations.length);
     if (app.source === "osm") { dot.className = "dot dot--ok"; label.textContent = n + " estaciones"; }
     else if (app.source === "loading") { dot.className = "dot dot--warn"; label.textContent = "Cargando estaciones…"; }
+    else if (S.LIVE) { dot.className = "dot dot--warn"; label.textContent = n + " estaciones"; }
     else { dot.className = "dot dot--warn"; label.textContent = n + " estaciones demo"; }
   }
 
@@ -364,12 +368,12 @@
         return '<button type="button" class="seg__btn" data-report="' + k + '">' + esc(S.QUEUE[k].label) + "</button>";
       }).join("") + "</div></div>";
 
-    var canPay = state.acceptsApp && state.open && FUELS.some(function (f) {
+    var canPay = state.acceptsApp && state.open && S.pmReady(state) && FUELS.some(function (f) {
       var s = state.fuels[f.key].status; return (s === "ok" || s === "low") && state.fuels[f.key].price != null;
     });
-    var payNote = !state.acceptsApp ? "Esta estación todavía no acepta pagos con Tanque ya."
+    var payNote = !state.acceptsApp || !S.pmReady(state) ? "Esta estación todavía no acepta pagos con Tanque ya."
       : !state.open ? "La estación está cerrada ahora."
-      : !canPay ? "No hay combustible disponible para pagar." : "Paga antes de llegar y muestra el código en la bomba.";
+      : !canPay ? "No hay combustible disponible para pagar." : "Pagas con Pago Móvil directo a la estación y te damos un código para la bomba.";
 
     var gmaps = "https://www.google.com/maps/dir/?api=1&destination=" + st.lat + "," + st.lng;
 
@@ -407,24 +411,44 @@
     $("#payBtn").onclick = function () { openPayment(st.id); };
     $all("[data-report]", $("#detailPane")).forEach(function (b) {
       b.onclick = function () {
-        S.addReport(st.id, b.getAttribute("data-report"));
-        refreshStation(st.id);
-        renderDetail();
-        toast("Gracias, tu reporte ya lo ven los demás conductores.", "ok");
+        b.disabled = true;
+        S.addReport(st.id, b.getAttribute("data-report")).then(function () {
+          refreshStation(st.id);
+          renderDetail();
+          toast("Gracias, tu reporte ya lo ven los demás conductores.", "ok");
+        }).catch(function (e) { b.disabled = false; toast(e.userMessage || "No se pudo enviar el reporte.", "err"); });
       };
     });
     $("[data-manage]", $("#detailPane")).onclick = function () { managerPrefill = st.id; };
   }
 
   /* =========================================================
-   * Pago (simulado)
+   * Pago con Pago Móvil (directo a la estación)
    * ======================================================= */
   var pay = null;
+  var openReceiptCode = null;
+  var PAYER_KEY = "ty.payer.v1";
+
+  function fuelLabel(key) { var f = FUELS.filter(function (x) { return x.key === key; })[0]; return f ? f.label : key; }
+  function fmtPhone(p) { p = String(p || "").replace(/\D/g, ""); return p.length === 11 ? p.slice(0, 4) + "-" + p.slice(4, 7) + "-" + p.slice(7) : p; }
+  function bankLabel(code) { return code ? code + " · " + S.bankName(code) : "—"; }
+
+  function savedPayer() {
+    try { return JSON.parse(window.localStorage.getItem(PAYER_KEY)) || {}; } catch (e) { return {}; }
+  }
+  function rememberPayer(p) {
+    try { window.localStorage.setItem(PAYER_KEY, JSON.stringify({ bank: p.bank, phone: p.phone, doc: p.doc })); } catch (e) {}
+  }
 
   function openPayment(id) {
     var st = app.byId[id], state = S.stateOf(st);
     var first = FUELS.filter(function (f) { var s = state.fuels[f.key].status; return s === "ok" || s === "low"; })[0];
-    pay = { st: st, state: state, step: 1, fuel: first && first.key, mode: "liters", amount: 20, method: "pagomovil" };
+    var saved = savedPayer();
+    var demoPayer = S.LIVE ? {} : { bank: "0134", phone: "04145550101", doc: "V-12345678", reference: String(Date.now()).slice(-8) };
+    pay = {
+      st: st, state: state, step: 1, fuel: first && first.key, mode: "liters", amount: 20,
+      payer: Object.assign({ bank: "", phone: "", doc: "", reference: "" }, demoPayer, saved, { reference: demoPayer.reference || "" })
+    };
     renderPayment();
   }
 
@@ -432,17 +456,21 @@
     var price = pay.state.fuels[pay.fuel].price;
     var rate = pay.state.rate || S.DEFAULTS.rate;
     var amt = Math.max(0, +pay.amount || 0);
-    var liters = pay.mode === "liters" ? amt : (price ? amt / price : 0);
-    var sub = liters * price;
-    var fee = Math.round(sub * S.DEFAULTS.serviceFee * 100) / 100;
-    var total = sub + fee;
-    return { price: price, rate: rate, liters: liters, sub: sub, fee: fee, total: total, totalBs: total * rate };
+    var liters = pay.mode === "liters" ? amt : (price && rate ? amt / (price * rate) : 0);
+    liters = Math.floor(liters * 100) / 100;
+    var usdTotal = Math.round(liters * price * 100) / 100;
+    return { price: price, rate: rate, liters: liters, totalUsd: usdTotal, totalBs: Math.round(liters * price * rate * 100) / 100 };
   }
 
   function steps(n) {
-    return '<ol class="steps">' + ["Combustible", "Método", "Listo"].map(function (s, i) {
+    return '<ol class="steps">' + ["Cuánto", "Pago Móvil", "Referencia"].map(function (s, i) {
       return '<li class="' + (i + 1 < n ? "done" : i + 1 === n ? "now" : "") + '"><span>' + (i + 1) + "</span>" + s + "</li>";
     }).join("") + "</ol>";
+  }
+
+  function copyRow(label, value, shown) {
+    return '<div class="pmrow"><dt>' + esc(label) + "</dt><dd><strong>" + esc(shown || value) + "</strong>" +
+      '<button type="button" class="btn btn--ghost btn--sm" data-copy="' + esc(value) + '">Copiar</button></dd></div>';
   }
 
   function renderPayment() {
@@ -458,121 +486,151 @@
           var dis = !(fs.status === "ok" || fs.status === "low");
           return '<label class="opt' + (dis ? " is-disabled" : "") + '"><input type="radio" name="fuel" value="' + f.key + '"' +
             (pay.fuel === f.key ? " checked" : "") + (dis ? " disabled" : "") + ">" +
-            "<span><strong>" + esc(f.label) + "</strong><small>" + usd(fs.price) + " /L · " + esc(S.AVAIL[fs.status].label) + "</small></span></label>";
+            "<span><strong>" + esc(f.label) + "</strong><small>" + usd(fs.price) + " · " + bs(fs.price * t.rate) + " por litro · " + esc(S.AVAIL[fs.status].label) + "</small></span></label>";
         }).join("") + "</div>" +
         '<p class="label">¿Cuánto?</p>' +
         '<div class="seg seg--2" role="group" aria-label="Unidad"><button type="button" class="seg__btn' + (pay.mode === "liters" ? " is-on" : "") + '" data-mode="liters">Litros</button>' +
-        '<button type="button" class="seg__btn' + (pay.mode === "usd" ? " is-on" : "") + '" data-mode="usd">Monto en $</button></div>' +
-        '<div class="amount"><input id="amountInput" type="number" inputmode="decimal" min="1" max="500" step="1" value="' + esc(pay.amount) + '" aria-label="Cantidad">' +
-        "<span>" + (pay.mode === "liters" ? "litros" : "dólares") + "</span></div>" +
-        '<div class="quick">' + (pay.mode === "liters" ? [10, 20, 30, 40, 60] : [5, 10, 20, 30]).map(function (v) {
-          return '<button type="button" class="chip" data-quick="' + v + '">' + (pay.mode === "liters" ? v + " L" : "$" + v) + "</button>";
+        '<button type="button" class="seg__btn' + (pay.mode === "bs" ? " is-on" : "") + '" data-mode="bs">Monto en Bs</button></div>' +
+        '<div class="amount"><input id="amountInput" type="number" inputmode="decimal" min="1" step="1" value="' + esc(pay.amount) + '" aria-label="Cantidad">' +
+        "<span>" + (pay.mode === "liters" ? "litros" : "bolívares") + "</span></div>" +
+        '<div class="quick">' + quickChips(t).map(function (v) {
+          return '<button type="button" class="chip" data-quick="' + v + '">' + (pay.mode === "liters" ? v + " L" : "Bs " + nf0.format(v)) + "</button>";
         }).join("") + "</div>" +
         summary(t) +
         '<div class="modal__actions"><button type="button" class="btn btn--primary btn--lg btn--block" id="nextBtn"' + (t.liters > 0 ? "" : " disabled") + ">Continuar</button></div>";
     } else if (pay.step === 2) {
-      var w = S.wallet();
-      html = '<h2 id="modalTitle">¿Cómo quieres pagar?</h2>' + steps(2) +
-        '<div class="opts opts--methods">' +
-        method("pagomovil", "Pago Móvil", "Desde la app de tu banco, en bolívares: " + bs(t.totalBs)) +
-        method("card", "Tarjeta de débito o crédito", "Visa, Mastercard, en dólares: " + usd(t.total)) +
-        method("wallet", "Saldo Tanque ya", "Disponible: " + usd(w) + (w < t.total ? " · saldo insuficiente" : ""), w < t.total) +
-        "</div>" +
-        '<div id="methodForm">' + methodForm(t) + "</div>" +
-        summary(t, true) +
-        '<p class="demo-note">Demostración: no se cobra dinero real ni se envía ningún dato.</p>' +
+      var pm = state.pm;
+      var amountStr = t.totalBs.toFixed(2).replace(".", ",");
+      html = '<h2 id="modalTitle">Haz el Pago Móvil</h2>' + steps(2) +
+        '<p class="muted">Abre la app de tu banco, entra en <b>Pago Móvil</b> y paga exactamente este monto a la estación:</p>' +
+        '<dl class="pmbox">' +
+        '<div class="pmrow pmrow--amount"><dt>Monto</dt><dd><strong>' + bs(t.totalBs) + "</strong>" +
+        '<button type="button" class="btn btn--ghost btn--sm" data-copy="' + amountStr + '">Copiar</button></dd></div>' +
+        copyRow("Banco", pm.bank, bankLabel(pm.bank)) +
+        copyRow("Teléfono", pm.phone, fmtPhone(pm.phone)) +
+        copyRow("RIF o cédula", pm.doc) +
+        (pm.holder ? '<div class="pmrow"><dt>Titular</dt><dd><strong>' + esc(pm.holder) + "</strong></dd></div>" : "") +
+        "</dl>" +
+        '<p class="muted small">El dinero va directo a la cuenta de la estación. Tanque ya no lo toca.</p>' +
+        (S.LIVE ? "" : '<p class="demo-note">Demostración: son datos de ejemplo. No hagas ningún pago real.</p>') +
         '<div class="modal__actions modal__actions--2"><button type="button" class="btn btn--ghost btn--lg" id="prevBtn">Atrás</button>' +
-        '<button type="button" class="btn btn--primary btn--lg" id="confirmBtn">Pagar ' + (pay.method === "pagomovil" ? bs(t.totalBs) : usd(t.total)) + "</button></div>";
+        '<button type="button" class="btn btn--primary btn--lg" id="nextBtn">Ya pagué</button></div>';
     } else if (pay.step === 3) {
-      html = '<div class="processing"><span class="spinner"></span><h2 id="modalTitle">Procesando el pago…</h2><p class="muted">Confirmando con el procesador de pagos</p></div>';
-    } else {
-      html = receiptHtml(pay.result, true);
+      var p = pay.payer;
+      html = '<h2 id="modalTitle">Datos de tu pago</h2>' + steps(3) +
+        '<p class="muted">Copia la referencia del comprobante de tu banco. Con ella la estación encuentra tu pago.</p>' +
+        '<form id="payerForm" class="form-grid" novalidate>' +
+        '<label class="field field--full"><span>Número de referencia</span><input id="pfRef" inputmode="numeric" autocomplete="off" placeholder="Ej.: 004512345678" value="' + esc(p.reference) + '" required></label>' +
+        '<label class="field field--full"><span>Tu banco</span><select id="pfBank" required><option value="">Elige tu banco</option>' +
+        S.BANKS.map(function (b) { return '<option value="' + b[0] + '"' + (p.bank === b[0] ? " selected" : "") + ">" + b[0] + " · " + esc(b[1]) + "</option>"; }).join("") +
+        "</select></label>" +
+        '<label class="field"><span>Tu teléfono</span><input id="pfPhone" inputmode="tel" autocomplete="tel" placeholder="0414 555 0101" value="' + esc(fmtPhone(p.phone)) + '" required></label>' +
+        '<label class="field"><span>Tu cédula</span><input id="pfDoc" autocomplete="off" placeholder="V-12345678" value="' + esc(p.doc) + '" required></label>' +
+        '<p class="form-error field--full" id="pfError" hidden></p>' +
+        "</form>" +
+        summary(t, true) +
+        '<div class="modal__actions modal__actions--2"><button type="button" class="btn btn--ghost btn--lg" id="prevBtn">Atrás</button>' +
+        '<button type="button" class="btn btn--primary btn--lg" id="sendBtn">Enviar a la estación</button></div>';
+    } else if (pay.step === 4) {
+      html = '<div class="processing"><span class="spinner"></span><h2 id="modalTitle">Enviando…</h2><p class="muted">Avisando a la estación de tu pago</p></div>';
     }
-    openModal(html, { onClose: function () { if (pay && pay.step === 4) { pay = null; } } });
+    openModal(html, { onClose: function () { pay = null; } });
     bindPayment();
   }
 
-  function method(key, title, sub, disabled) {
-    return '<label class="opt' + (disabled ? " is-disabled" : "") + '"><input type="radio" name="method" value="' + key + '"' +
-      (pay.method === key ? " checked" : "") + (disabled ? " disabled" : "") + "><span><strong>" + esc(title) + "</strong><small>" + esc(sub) + "</small></span></label>";
-  }
-
-  function methodForm(t) {
-    if (pay.method === "pagomovil") {
-      return '<div class="form-grid">' +
-        '<label class="field"><span>Teléfono</span><input id="pmPhone" inputmode="tel" placeholder="0412 123 4567" value="0412 555 0101"></label>' +
-        '<label class="field"><span>Cédula</span><input id="pmId" inputmode="numeric" placeholder="V-12345678" value="V-12345678"></label>' +
-        '</div><p class="muted small">En una versión real aquí se confirma la referencia del Pago Móvil con el banco.</p>';
-    }
-    if (pay.method === "card") {
-      return '<div class="form-grid">' +
-        '<label class="field field--full"><span>Número de tarjeta (de prueba)</span><input id="cardNum" inputmode="numeric" value="4242 4242 4242 4242" readonly></label>' +
-        '<label class="field"><span>Vence</span><input value="12/29" readonly></label>' +
-        '<label class="field"><span>CVC</span><input value="123" readonly></label>' +
-        '</div><p class="muted small">Tarjeta de prueba. No escribas los datos de una tarjeta real.</p>';
-    }
-    return '<p class="muted small">Se descuenta ' + usd(t.total) + " de tu saldo.</p>";
+  function quickChips(t) {
+    if (pay.mode === "liters") return [10, 20, 30, 40, 60];
+    var per = t.price * t.rate;
+    return [10, 20, 40].map(function (l) { var v = l * per; var r = v > 1000 ? 100 : v > 100 ? 10 : 1; return Math.max(1, Math.round(v / r) * r); });
   }
 
   function summary(t, compact) {
     return '<dl class="summary' + (compact ? " summary--compact" : "") + '">' +
-      "<div><dt>" + nf1.format(t.liters) + " L × " + usd(t.price) + "</dt><dd>" + usd(t.sub) + "</dd></div>" +
-      "<div><dt>Tarifa de servicio (" + (S.DEFAULTS.serviceFee * 100) + " %)</dt><dd>" + usd(t.fee) + "</dd></div>" +
-      '<div class="total"><dt>Total</dt><dd>' + usd(t.total) + "<small>" + bs(t.totalBs) + "</small></dd></div></dl>";
+      "<div><dt>" + nf1.format(t.liters) + " L × " + usd(t.price) + "</dt><dd>" + usd(t.totalUsd) + "</dd></div>" +
+      "<div><dt>Tasa de la estación</dt><dd>" + bs(t.rate) + " por $</dd></div>" +
+      '<div class="total"><dt>A pagar por Pago Móvil</dt><dd>' + bs(t.totalBs) + "<small>" + usd(t.totalUsd) + "</small></dd></div></dl>";
+  }
+
+  function copyText(text, btn) {
+    function done() { if (btn) { var o = btn.textContent; btn.textContent = "Copiado"; setTimeout(function () { btn.textContent = o; }, 1400); } }
+    try {
+      navigator.clipboard.writeText(text).then(done, function () { fallbackCopy(text); done(); });
+    } catch (e) { fallbackCopy(text); done(); }
+  }
+  function fallbackCopy(text) {
+    var ta = document.createElement("textarea");
+    ta.value = text; ta.setAttribute("readonly", ""); ta.style.position = "fixed"; ta.style.opacity = "0";
+    document.body.appendChild(ta); ta.select();
+    try { document.execCommand("copy"); } catch (e) {}
+    document.body.removeChild(ta);
   }
 
   function bindPayment() {
     var body = $("#modalBody");
+    $all("[data-copy]", body).forEach(function (b) { b.onclick = function () { copyText(b.getAttribute("data-copy"), b); }; });
+    var prev = $("#prevBtn");
+    if (prev) prev.onclick = function () { pay.step -= 1; renderPayment(); };
     if (pay.step === 1) {
       $all('input[name="fuel"]', body).forEach(function (r) { r.onchange = function () { pay.fuel = r.value; renderPayment(); }; });
       $all("[data-mode]", body).forEach(function (b) {
         b.onclick = function () {
           var t = payTotals();
           pay.mode = b.getAttribute("data-mode");
-          pay.amount = pay.mode === "usd" ? Math.max(1, Math.round(t.sub)) : Math.max(1, Math.round(t.liters));
+          pay.amount = pay.mode === "bs" ? Math.max(1, Math.round(t.totalBs)) : Math.max(1, Math.round(t.liters));
           renderPayment();
         };
       });
       $all("[data-quick]", body).forEach(function (b) { b.onclick = function () { pay.amount = +b.getAttribute("data-quick"); renderPayment(); }; });
       var inp = $("#amountInput");
       inp.oninput = function () {
-        pay.amount = Math.min(500, +inp.value || 0);
+        pay.amount = +inp.value || 0;
         var t = payTotals();
+        if (t.liters > 500) { pay.amount = pay.mode === "liters" ? 500 : Math.floor(500 * t.price * t.rate); t = payTotals(); }
         $(".summary", body).outerHTML = summary(t);
         $("#nextBtn").disabled = !(t.liters > 0);
       };
       $("#nextBtn").onclick = function () { if (payTotals().liters > 0) { pay.step = 2; renderPayment(); } };
     } else if (pay.step === 2) {
-      $all('input[name="method"]', body).forEach(function (r) { r.onchange = function () { pay.method = r.value; renderPayment(); }; });
-      $("#prevBtn").onclick = function () { pay.step = 1; renderPayment(); };
-      $("#confirmBtn").onclick = function () {
-        if (pay.method === "pagomovil") {
-          var ph = ($("#pmPhone").value || "").replace(/\D/g, "");
-          if (ph.length < 10) { toast("Escribe un teléfono válido.", "err"); return; }
-        }
-        var t = payTotals();
-        if (pay.method === "wallet" && S.wallet() < t.total) { toast("Saldo insuficiente.", "err"); return; }
-        pay.step = 3; renderPayment();
-        setTimeout(function () {
-          var fuel = FUELS.filter(function (f) { return f.key === pay.fuel; })[0];
-          pay.result = S.createPayment({
-            stationId: pay.st.id, stationName: pay.st.name, stationAddress: [pay.st.address, pay.st.city].filter(Boolean).join(" · "),
-            fuel: pay.fuel, fuelLabel: fuel.label, liters: Math.round(t.liters * 10) / 10, priceUsd: t.price,
-            subtotalUsd: Math.round(t.sub * 100) / 100, feeUsd: t.fee, totalUsd: Math.round(t.total * 100) / 100,
-            totalBs: Math.round(t.totalBs * 100) / 100, rate: t.rate, method: pay.method
-          });
-          pay.step = 4; renderPayment();
-          renderReceipts();
-        }, 1600);
+      $("#nextBtn").onclick = function () { pay.step = 3; renderPayment(); };
+    } else if (pay.step === 3) {
+      var keep = function () {
+        pay.payer = {
+          reference: ($("#pfRef").value || "").replace(/\D/g, ""),
+          bank: $("#pfBank").value,
+          phone: ($("#pfPhone").value || "").replace(/\D/g, ""),
+          doc: ($("#pfDoc").value || "").toUpperCase().replace(/\s+/g, "")
+        };
       };
-    } else if (pay.step === 4) {
-      var go = $("#goReceipts");
-      if (go) go.onclick = function () { closeModal(); location.hash = "#pagos"; };
+      $all("#payerForm input, #payerForm select", body).forEach(function (el) { el.addEventListener("input", keep); el.addEventListener("change", keep); });
+      $("#payerForm").onsubmit = function (e) { e.preventDefault(); $("#sendBtn").click(); };
+      $("#sendBtn").onclick = function () {
+        keep();
+        var p = pay.payer, msg = "";
+        if (p.doc && /^[VEJPG]\d/.test(p.doc)) p.doc = p.doc[0] + "-" + p.doc.slice(1);
+        if (!/^\d{4,20}$/.test(p.reference)) msg = "Escribe el número de referencia que te dio tu banco (solo números).";
+        else if (!p.bank) msg = "Elige el banco desde el que pagaste.";
+        else if (!/^0\d{10}$/.test(p.phone)) msg = "Escribe tu teléfono con 11 dígitos, por ejemplo 0414 555 0101.";
+        else if (!/^[VEJPG]-?\d{5,10}$/.test(p.doc)) msg = "Escribe tu cédula así: V-12345678.";
+        var errBox = $("#pfError");
+        if (msg) { errBox.textContent = msg; errBox.hidden = false; return; }
+        var t = payTotals();
+        rememberPayer(p);
+        var snapshot = pay;
+        pay.step = 4; renderPayment();
+        S.createPayment({
+          stationId: snapshot.st.id, stationName: snapshot.st.name, fuel: snapshot.fuel, liters: t.liters,
+          payerBank: p.bank, payerPhone: p.phone, payerDoc: p.doc, reference: p.reference, _state: snapshot.state
+        }).then(function (result) {
+          pay = null;
+          renderReceipts();
+          showReceipt(result.code, true);
+        }).catch(function (e) {
+          pay = snapshot; pay.step = 3; renderPayment();
+          var box = $("#pfError"); box.textContent = e.userMessage || "No se pudo enviar. Inténtalo de nuevo."; box.hidden = false;
+        });
+      };
     }
   }
-
-  var METHOD_LABEL = { pagomovil: "Pago Móvil", card: "Tarjeta", wallet: "Saldo Tanque ya" };
-  var STATUS_LABEL = { pagado: "Listo para despachar", despachado: "Despachado" };
 
   function qrSvg(text, cell) {
     try {
@@ -582,63 +640,90 @@
     } catch (e) { return ""; }
   }
 
+  var ICON_CLOCK = '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 2a10 10 0 1 1 0 20 10 10 0 0 1 0-20Zm0 2a8 8 0 1 0 0 16 8 8 0 0 0 0-16Zm1 3v4.6l3.2 3.2-1.4 1.4-3.8-3.8V7h2Z"/></svg>';
+  var ICON_OK = '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="m9.6 15.6-3.5-3.5-1.4 1.4 4.9 4.9 10-10-1.4-1.4-8.6 8.6Z"/></svg>';
+  var ICON_X = '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="m6.4 5 5.6 5.6L17.6 5 19 6.4 13.4 12l5.6 5.6-1.4 1.4-5.6-5.6L6.4 19 5 17.6l5.6-5.6L5 6.4 6.4 5Z"/></svg>';
+
   function receiptHtml(p, fresh) {
-    return '<div class="receipt' + (p.status === "despachado" ? " receipt--done" : "") + '">' +
-      (fresh ? '<div class="receipt__ok"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m9.6 15.6-3.5-3.5-1.4 1.4 4.9 4.9 10-10-1.4-1.4-8.6 8.6Z"/></svg></div><h2 id="modalTitle">¡Pago aprobado!</h2>' +
-        '<p class="muted center">Muestra este código al despachador.</p>' : "") +
-      '<div class="receipt__qr">' + qrSvg("TANQUEYA:" + p.code) + "</div>" +
-      '<p class="receipt__code">' + esc(p.code) + "</p>" +
-      '<span class="badge badge--' + (p.status === "despachado" ? "na" : "ok") + '">' + esc(STATUS_LABEL[p.status] || p.status) + "</span>" +
+    var st = S.STATUS[p.status] || { label: p.status, tone: "na" };
+    var head;
+    if (p.status === "por_verificar") {
+      head = '<div class="receipt__icon receipt__icon--warn">' + ICON_CLOCK + "</div>" +
+        '<h2 id="modalTitle">' + (fresh ? "Pago enviado" : "Esperando confirmación") + "</h2>" +
+        '<p class="muted center">La estación está comprobando que tu Pago Móvil llegó. Esta pantalla se actualiza sola; cuando lo confirme, aparecerá tu código para la bomba.</p>' +
+        (S.LIVE ? "" : '<p class="demo-note">En la demo, confírmalo tú: entra en <b>Gerentes</b> con esta estación y el PIN 1234.</p>');
+    } else if (p.status === "rechazado") {
+      head = '<div class="receipt__icon receipt__icon--out">' + ICON_X + "</div>" +
+        '<h2 id="modalTitle">La estación no encontró tu pago</h2>' +
+        '<p class="muted center">' + esc(p.rejectReason || "Revisa los datos.") + " Si pagaste, habla con la estación y enséñale la referencia de tu banco.</p>";
+    } else {
+      head = (p.status === "aprobado" ? '<div class="receipt__icon">' + ICON_OK + '</div><h2 id="modalTitle">¡Pago confirmado!</h2><p class="muted center">Muestra este código al despachador.</p>'
+        : '<h2 id="modalTitle">Combustible despachado</h2>') +
+        '<div class="receipt__qr">' + qrSvg("TANQUEYA:" + p.code) + "</div>" +
+        '<p class="receipt__code">' + esc(p.code) + "</p>";
+    }
+    return '<div class="receipt receipt--' + p.status + '" data-code="' + esc(p.code) + '">' + head +
+      '<span class="badge badge--' + st.tone + '">' + esc(st.label) + "</span>" +
       '<dl class="summary summary--compact">' +
       "<div><dt>Estación</dt><dd>" + esc(p.stationName) + "</dd></div>" +
-      "<div><dt>Combustible</dt><dd>" + esc(p.fuelLabel) + " · " + nf1.format(p.liters) + " L</dd></div>" +
-      "<div><dt>Método</dt><dd>" + esc(METHOD_LABEL[p.method] || p.method) + "</dd></div>" +
+      "<div><dt>Combustible</dt><dd>" + esc(fuelLabel(p.fuel)) + " · " + nf1.format(p.liters) + " L</dd></div>" +
+      "<div><dt>Pagado desde</dt><dd>" + esc(S.bankName(p.payerBank)) + " · " + esc(fmtPhone(p.payerPhone)) + "</dd></div>" +
+      "<div><dt>Referencia</dt><dd>" + esc(p.reference) + "</dd></div>" +
       "<div><dt>Fecha</dt><dd>" + new Date(p.createdAt).toLocaleString("es-VE", { dateStyle: "medium", timeStyle: "short" }) + "</dd></div>" +
-      '<div class="total"><dt>Total</dt><dd>' + usd(p.totalUsd) + "<small>" + bs(p.totalBs) + "</small></dd></div></dl>" +
+      '<div class="total"><dt>Total</dt><dd>' + bs(p.totalBs) + "<small>" + usd(p.totalUsd) + "</small></dd></div></dl>" +
       (fresh ? '<div class="modal__actions"><button type="button" class="btn btn--primary btn--lg btn--block" id="goReceipts">Ver mis pagos</button></div>' : "") +
       "</div>";
+  }
+
+  function findPayment(code) { return S.payments().filter(function (x) { return x.code === code; })[0]; }
+
+  function showReceipt(code, fresh) {
+    var p = findPayment(code);
+    if (!p) return;
+    openReceiptCode = code;
+    openModal(receiptHtml(p, fresh), { onClose: function () { openReceiptCode = null; } });
+    var go = $("#goReceipts");
+    if (go) go.onclick = function () { closeModal(); location.hash = "#pagos"; };
+  }
+
+  // Si el recibo abierto cambió de estado (lo confirmó la estación), se repinta.
+  function refreshOpenReceipt() {
+    if (!openReceiptCode || $("#modal").hidden) return;
+    var p = findPayment(openReceiptCode);
+    var shown = $("#modalBody .receipt");
+    if (p && shown && !shown.classList.contains("receipt--" + p.status)) {
+      var fresh = !!$("#goReceipts");
+      showReceipt(p.code, fresh);
+      if (p.status === "aprobado") toast("La estación confirmó tu pago.", "ok");
+      if (p.status === "rechazado") toast("La estación no encontró tu pago.", "err");
+    }
   }
 
   /* =========================================================
    * Mis pagos
    * ======================================================= */
   function renderReceipts() {
-    $("#walletBalance").textContent = usd(S.wallet());
-    var list = S.payments();
+    var list = S.payments().filter(function (p) { return p.mine; });
     var root = $("#receiptList");
     if (!list.length) {
       root.innerHTML = '<div class="empty-state"><div class="empty-state__icon">' + PUMP + "</div><h2>Todavía no has pagado combustible</h2>" +
-        '<p class="muted">Busca una estación en el mapa, elige cuánto quieres y paga desde aquí. Te daremos un código para la bomba.</p>' +
+        '<p class="muted">Busca una estación en el mapa, elige cuánto quieres y paga con Pago Móvil. Cuando la estación lo confirme, te daremos un código para la bomba.</p>' +
         '<a class="btn btn--primary" href="#mapa">Ir al mapa</a></div>';
       return;
     }
     root.innerHTML = list.map(function (p) {
-      return '<button type="button" class="rcard' + (p.status === "despachado" ? " rcard--done" : "") + '" data-code="' + esc(p.code) + '">' +
-        '<span class="rcard__qr">' + qrSvg("TANQUEYA:" + p.code, 2) + "</span>" +
+      var st = S.STATUS[p.status];
+      var showQr = p.status === "aprobado" || p.status === "despachado";
+      return '<button type="button" class="rcard rcard--' + p.status + '" data-code="' + esc(p.code) + '">' +
+        '<span class="rcard__qr">' + (showQr ? qrSvg("TANQUEYA:" + p.code, 2) : '<span class="rcard__wait rcard__wait--' + st.tone + '">' + (p.status === "rechazado" ? ICON_X : ICON_CLOCK) + "</span>") + "</span>" +
         '<span class="rcard__body"><strong>' + esc(p.stationName) + "</strong>" +
-        '<span class="muted">' + esc(p.fuelLabel) + " · " + nf1.format(p.liters) + " L · " + ago(p.createdAt) + "</span>" +
-        '<span class="rcard__code">' + esc(p.code) + "</span></span>" +
-        '<span class="rcard__right"><strong>' + usd(p.totalUsd) + "</strong>" +
-        '<span class="badge badge--' + (p.status === "despachado" ? "na" : "ok") + '">' + esc(STATUS_LABEL[p.status]) + "</span></span></button>";
+        '<span class="muted">' + esc(fuelLabel(p.fuel)) + " · " + nf1.format(p.liters) + " L · " + ago(p.createdAt) + "</span>" +
+        '<span class="rcard__code">' + (showQr ? esc(p.code) : "Ref. " + esc(p.reference)) + "</span></span>" +
+        '<span class="rcard__right"><strong>' + bs(p.totalBs) + "</strong>" +
+        '<span class="badge badge--' + st.tone + '">' + esc(st.label) + "</span></span></button>";
     }).join("");
-    $all(".rcard", root).forEach(function (b) {
-      b.onclick = function () {
-        var p = S.payments().filter(function (x) { return x.code === b.getAttribute("data-code"); })[0];
-        if (p) openModal(receiptHtml(p, false));
-      };
-    });
+    $all(".rcard", root).forEach(function (b) { b.onclick = function () { showReceipt(b.getAttribute("data-code"), false); }; });
   }
-
-  $("#topupBtn").onclick = function () {
-    openModal('<h2 id="modalTitle">Recargar saldo</h2><p class="muted">Recarga simulada para la demostración.</p>' +
-      '<div class="quick quick--big">' + [10, 20, 50].map(function (v) { return '<button type="button" class="chip" data-topup="' + v + '">+ $' + v + "</button>"; }).join("") + "</div>");
-    $all("[data-topup]", $("#modalBody")).forEach(function (b) {
-      b.onclick = function () {
-        S.setWallet(S.wallet() + +b.getAttribute("data-topup"));
-        closeModal(); renderReceipts(); toast("Saldo recargado.", "ok");
-      };
-    });
-  };
 
   /* =========================================================
    * Panel de gerentes
@@ -646,42 +731,42 @@
   var DEMO_PIN = "1234";
   var managerPrefill = null;
   var draft = null;
+  var REJECT_REASONS = ["El pago no llegó a la cuenta", "El monto no coincide", "La referencia no coincide"];
+
+  function managerStation(m) {
+    if (!m || !m.stationId) return null;
+    var st = app.byId[m.stationId];
+    if (st) return st;
+    var reg = S.registeredStations().filter(function (s) { return s.id === m.stationId; })[0];
+    if (reg) { app.stations.push(reg); app.byId[reg.id] = reg; reg._search = norm(reg.name + " " + reg.city); }
+    return reg || null;
+  }
 
   function renderManager() {
-    var sess = S.session();
-    var st = sess && app.byId[sess.stationId];
-    if (sess && !st && app.source !== "loading") { S.setSession(null); sess = null; }
-    if (!sess || !st) return renderLogin();
+    var m = S.manager();
+    if (!m) return renderLogin();
+    if (!m.stationId) return renderNoStation();
+    var st = managerStation(m);
+    if (!st) {
+      if (!m.live && app.source !== "loading") { S.signOut(); return renderLogin(); }
+      $("#managerRoot").innerHTML = '<div class="empty-state"><span class="spinner"></span><p class="muted">Cargando tu estación…</p></div>';
+      return;
+    }
     renderDashboard(st);
   }
 
-  function renderLogin() {
-    var root = $("#managerRoot");
-    var pre = managerPrefill && app.byId[managerPrefill];
-    root.innerHTML =
-      '<div class="login">' +
-      '<div class="login__intro">' +
-      "<h1>Panel para estaciones</h1>" +
-      '<p class="lead">Publica en segundos qué combustible tienes, a qué precio y cuánta cola hay. Cobra desde el teléfono y valida los pagos en la bomba.</p>' +
-      '<ul class="ticks"><li>Actualiza disponibilidad y precios en un toque</li><li>Recibe pagos en bolívares o dólares</li><li>Valida el código QR del conductor antes de despachar</li><li>Mira tus ventas del día</li></ul>' +
-      "</div>" +
-      '<form class="card login__card" id="loginForm" autocomplete="off">' +
-      "<h2>Entrar</h2>" +
-      '<label class="field field--full"><span>Tu estación</span>' +
-      '<input id="stSearch" placeholder="Escribe el nombre o la ciudad" value="' + (pre ? esc(pre.name) : "") + '"></label>' +
+  function stationPicker(pre) {
+    return '<label class="field field--full"><span>Tu estación</span>' +
+      '<input id="stSearch" placeholder="Escribe el nombre o la ciudad" autocomplete="off" value="' + (pre ? esc(pre.name) : "") + '"></label>' +
       '<ul class="suggest" id="stSuggest" hidden></ul>' +
-      '<p class="picked" id="stPicked">' + (pre ? pickedHtml(pre) : '<span class="muted small">Elige tu estación de la lista.</span>') + "</p>" +
-      '<label class="field field--full"><span>PIN de acceso</span><input id="pinInput" type="password" inputmode="numeric" maxlength="6" placeholder="••••"></label>' +
-      '<p class="muted small">Demostración: el PIN de todas las estaciones es <b>1234</b>.</p>' +
-      '<button class="btn btn--primary btn--lg btn--block" type="submit">Entrar al panel</button>' +
-      '<button class="btn btn--link" type="button" id="registerBtn">¿Tu estación no aparece? Regístrala</button>' +
-      "</form></div>";
+      '<p class="picked" id="stPicked">' + (pre ? pickedHtml(pre) : '<span class="muted small">Elige tu estación de la lista.</span>') + "</p>";
+  }
 
-    var chosen = pre ? pre.id : null;
+  function bindPicker(onPick) {
     var input = $("#stSearch"), sug = $("#stSuggest");
     input.oninput = function () {
       var q = norm(input.value);
-      chosen = null;
+      onPick(null);
       $("#stPicked").innerHTML = '<span class="muted small">Elige tu estación de la lista.</span>';
       if (q.length < 2) { sug.hidden = true; return; }
       var res = app.stations.filter(function (s) { return s._search.indexOf(q) !== -1; }).slice(0, 8);
@@ -692,61 +777,137 @@
       $all("[data-pick]", sug).forEach(function (b) {
         b.onclick = function () {
           var s = app.byId[b.getAttribute("data-pick")];
-          chosen = s.id; input.value = s.name; sug.hidden = true;
+          input.value = s.name; sug.hidden = true;
           $("#stPicked").innerHTML = pickedHtml(s);
-          $("#pinInput").focus();
+          onPick(s);
         };
       });
     };
+  }
+
+  function loginIntro() {
+    return '<div class="login__intro">' +
+      "<h1>Panel para estaciones</h1>" +
+      '<p class="lead">Publica en segundos qué combustible tienes, a qué precio y cuánta cola hay. Recibe los Pago Móvil directo en tu cuenta y confírmalos desde aquí.</p>' +
+      '<ul class="ticks"><li>Actualiza disponibilidad y precios en un toque</li><li>El dinero llega directo a tu cuenta, sin intermediarios</li><li>Confirma cada pago con la referencia de tu banco</li><li>Valida el código QR antes de despachar</li></ul>' +
+      "</div>";
+  }
+
+  function renderLogin() {
+    var root = $("#managerRoot");
+    if (S.LIVE) return renderLiveLogin(false);
+    var pre = managerPrefill && app.byId[managerPrefill];
+    root.innerHTML = '<div class="login">' + loginIntro() +
+      '<form class="card login__card" id="loginForm" autocomplete="off">' +
+      "<h2>Entrar</h2>" + stationPicker(pre) +
+      '<label class="field field--full"><span>PIN de acceso</span><input id="pinInput" type="password" inputmode="numeric" maxlength="6" placeholder="••••"></label>' +
+      '<p class="muted small">Demostración: el PIN de todas las estaciones es <b>1234</b>.</p>' +
+      '<button class="btn btn--primary btn--lg btn--block" type="submit">Entrar al panel</button>' +
+      "</form></div>";
+    var chosen = pre ? pre.id : null;
+    bindPicker(function (s) { chosen = s ? s.id : null; if (s) $("#pinInput").focus(); });
     $("#loginForm").onsubmit = function (e) {
       e.preventDefault();
-      if (!chosen) { toast("Primero elige tu estación de la lista.", "err"); input.focus(); return; }
+      if (!chosen) { toast("Primero elige tu estación de la lista.", "err"); $("#stSearch").focus(); return; }
       if ($("#pinInput").value !== DEMO_PIN) { toast("PIN incorrecto. En la demo es 1234.", "err"); return; }
-      S.setSession({ stationId: chosen, at: Date.now() });
+      S.demoLogin(chosen);
       managerPrefill = null; draft = null;
       renderManager();
       toast("Bienvenido al panel de tu estación.", "ok");
     };
-    $("#registerBtn").onclick = openRegister;
+  }
+
+  function renderLiveLogin(signup) {
+    $("#managerRoot").innerHTML = '<div class="login">' + loginIntro() +
+      '<form class="card login__card" id="authForm">' +
+      "<h2>" + (signup ? "Crear cuenta de gerente" : "Entrar") + "</h2>" +
+      '<label class="field field--full"><span>Correo</span><input id="authEmail" type="email" autocomplete="email" required></label>' +
+      '<label class="field field--full"><span>Contraseña</span><input id="authPass" type="password" autocomplete="' + (signup ? "new-password" : "current-password") + '" minlength="8" required></label>' +
+      '<p class="form-error" id="authError" hidden></p>' +
+      '<button class="btn btn--primary btn--lg btn--block" type="submit" id="authBtn">' + (signup ? "Crear cuenta" : "Entrar al panel") + "</button>" +
+      '<button class="btn btn--link" type="button" id="authSwitch">' + (signup ? "Ya tengo cuenta" : "¿Primera vez? Crea tu cuenta") + "</button>" +
+      "</form></div>";
+    $("#authSwitch").onclick = function () { renderLiveLogin(!signup); };
+    $("#authForm").onsubmit = function (e) {
+      e.preventDefault();
+      var email = $("#authEmail").value.trim(), pass = $("#authPass").value, box = $("#authError"), btn = $("#authBtn");
+      if (pass.length < 8) { box.textContent = "La contraseña debe tener al menos 8 caracteres."; box.hidden = false; return; }
+      btn.disabled = true; box.hidden = true;
+      var job = signup ? S.signUp(email, pass) : S.signIn(email, pass);
+      job.then(function (res) {
+        btn.disabled = false;
+        if (signup && res && !res.confirmed) {
+          $("#managerRoot").innerHTML = '<div class="empty-state"><h2>Revisa tu correo</h2><p class="muted">Te enviamos un enlace a <b>' + esc(email) +
+            '</b>. Ábrelo para confirmar la cuenta y luego vuelve a entrar.</p><button class="btn btn--primary" type="button" id="backLogin">Ir a entrar</button></div>';
+          $("#backLogin").onclick = function () { renderLiveLogin(false); };
+          return;
+        }
+        draft = null;
+        afterDataChange();
+        renderManager();
+      }).catch(function (e2) { btn.disabled = false; box.textContent = e2.userMessage || "No se pudo entrar."; box.hidden = false; });
+    };
+  }
+
+  function renderNoStation() {
+    var root = $("#managerRoot");
+    root.innerHTML = '<div class="login">' +
+      '<div class="login__intro"><h1>Activa tu estación</h1><p class="lead">Tu cuenta (' + esc(S.manager().email || "") + ') todavía no está vinculada a ninguna estación. ' +
+      "Envíanos la solicitud: verificamos que eres el gerente y la activamos.</p>" +
+      '<div id="reqList" class="muted small">Cargando tus solicitudes…</div></div>' +
+      '<form class="card login__card" id="reqForm">' +
+      "<h2>Solicitar activación</h2>" + stationPicker(managerPrefill && app.byId[managerPrefill]) +
+      '<label class="field field--full"><span>RIF de la estación</span><input id="reqRif" placeholder="J-12345678-9" required></label>' +
+      '<label class="field field--full"><span>Teléfono de contacto</span><input id="reqPhone" inputmode="tel" placeholder="0412 555 0101" required></label>' +
+      '<p class="form-error" id="reqError" hidden></p>' +
+      '<button class="btn btn--primary btn--lg btn--block" type="submit">Enviar solicitud</button>' +
+      '<button class="btn btn--link" type="button" id="logoutBtn">Salir</button>' +
+      "</form></div>";
+    var chosen = managerPrefill && app.byId[managerPrefill] || null;
+    bindPicker(function (s) { chosen = s; });
+    S.myRequests().then(function (reqs) {
+      var box = $("#reqList"); if (!box) return;
+      box.innerHTML = reqs.length ? "<p><b>Tus solicitudes</b></p>" + reqs.map(function (r) {
+        return "<p>" + esc(r.name) + ' · <span class="badge badge--' + (r.status === "aprobada" ? "ok" : r.status === "rechazada" ? "out" : "warn") + '">' + esc(r.status) + "</span></p>";
+      }).join("") + (reqs.some(function (r) { return r.status === "aprobada"; }) ? '<p>Si ya está aprobada, sal y vuelve a entrar.</p>' : "") : "";
+    }).catch(function () {});
+    $("#logoutBtn").onclick = function () { S.signOut().then(renderManager); };
+    $("#reqForm").onsubmit = function (e) {
+      e.preventDefault();
+      var box = $("#reqError"), rif = $("#reqRif").value.trim().toUpperCase(), phone = $("#reqPhone").value.replace(/\D/g, "");
+      if (!chosen) { box.textContent = "Elige tu estación de la lista."; box.hidden = false; return; }
+      if (!/^[VEJPG]-?\d{5,10}(-?\d)?$/.test(rif)) { box.textContent = "Escribe el RIF así: J-12345678-9."; box.hidden = false; return; }
+      if (phone.length !== 11) { box.textContent = "Escribe un teléfono de 11 dígitos."; box.hidden = false; return; }
+      S.requestStation(chosen, phone, rif).then(function () {
+        toast("Solicitud enviada. Te avisaremos cuando esté activa.", "ok");
+        renderNoStation();
+      }).catch(function (e2) { box.textContent = e2.userMessage || "No se pudo enviar."; box.hidden = false; });
+    };
   }
 
   function pickedHtml(s) {
     return '<span class="picked__ok">✓</span> <strong>' + esc(s.name) + "</strong> <span class=\"muted small\">" + esc([s.address, s.city].filter(Boolean).join(" · ")) + "</span>";
   }
 
-  function openRegister() {
-    openModal('<h2 id="modalTitle">Registrar una estación</h2><p class="muted">Nuestro equipo verifica cada estación antes de activarla.</p>' +
-      '<form id="regForm" class="form-grid">' +
-      '<label class="field field--full"><span>Nombre de la estación</span><input required autofocus></label>' +
-      '<label class="field field--full"><span>Dirección</span><input required></label>' +
-      '<label class="field"><span>Nombre del gerente</span><input required></label>' +
-      '<label class="field"><span>Teléfono</span><input required inputmode="tel"></label>' +
-      '<p class="demo-note field--full">Demostración: esta solicitud no se envía a ningún sitio.</p>' +
-      '<button class="btn btn--primary btn--lg btn--block field--full" type="submit">Enviar solicitud</button></form>');
-    $("#regForm").onsubmit = function (e) { e.preventDefault(); closeModal(); toast("Solicitud recibida. Te contactaremos para verificarla.", "ok"); };
-  }
-
   function stationDraft(st) {
     var s = S.stateOf(st);
+    var def = s.modality === "subs" ? S.DEFAULTS.priceSubs : S.DEFAULTS.priceIntl;
+    function fd(k, fallbackStatus) {
+      return { status: s.fuels[k].status || fallbackStatus, price: s.fuels[k].price != null ? s.fuels[k].price : def };
+    }
     return {
       open: s.open, queue: s.queue || "none", acceptsApp: s.acceptsApp, hours: s.hours || "",
       modality: s.modality, rate: s.rate || S.DEFAULTS.rate,
-      fuels: {
-        g91: { status: s.fuels.g91.status || "ok", price: s.fuels.g91.price != null ? s.fuels.g91.price : S.DEFAULTS.priceIntl },
-        g95: { status: s.fuels.g95.status || "ok", price: s.fuels.g95.price != null ? s.fuels.g95.price : S.DEFAULTS.priceIntl },
-        diesel: { status: s.fuels.diesel.status || "none", price: s.fuels.diesel.price != null ? s.fuels.diesel.price : S.DEFAULTS.priceIntl }
-      }
+      fuels: { g91: fd("g91", "ok"), g95: fd("g95", "ok"), diesel: fd("diesel", "none") },
+      pm: Object.assign({ bank: "", phone: "", doc: "", holder: "" }, s.pm)
     };
   }
+
+  function stationPayments(st) { return S.payments().filter(function (p) { return p.stationId === st.id; }); }
 
   function renderDashboard(st) {
     if (!draft || draft.id !== st.id) { draft = stationDraft(st); draft.id = st.id; draft.dirty = false; }
     var state = S.stateOf(st);
-    var pays = S.payments().filter(function (p) { return p.stationId === st.id; });
-    var today = pays.filter(function (p) { return p.createdAt >= startOfToday(); });
-    var liters = today.reduce(function (a, p) { return a + p.liters; }, 0);
-    var income = today.reduce(function (a, p) { return a + p.subtotalUsd; }, 0);
-    var pending = pays.filter(function (p) { return p.status === "pagado"; });
 
     function seg(name, value, options) {
       return '<div class="seg seg--' + options.length + '" role="group">' + options.map(function (o) {
@@ -764,20 +925,19 @@
         "</div>";
     }).join("");
 
+    var pm = draft.pm;
     $("#managerRoot").innerHTML =
       '<div class="dash">' +
       '<div class="dash__head"><div>' +
-      '<p class="eyebrow">Panel de estación</p><h1>' + esc(st.name) + "</h1>" +
+      '<p class="eyebrow">Panel de estación' + (S.LIVE ? "" : " · demostración") + "</p><h1>" + esc(st.name) + "</h1>" +
       '<p class="muted">' + esc([st.address, st.city].filter(Boolean).join(" · ")) + " · Última actualización " + esc(ago(state.updatedAt)) + (state.simulated ? " (simulada)" : "") + "</p></div>" +
       '<div class="dash__head-actions"><button type="button" class="btn btn--ghost" id="viewOnMap">Ver en el mapa</button>' +
       '<button type="button" class="btn btn--ghost" id="logoutBtn">Salir</button></div></div>' +
 
-      '<div class="kpis">' +
-      kpi("Pagos hoy", nf0.format(today.length)) +
-      kpi("Litros hoy", nf1.format(liters)) +
-      kpi("Ventas hoy", usd(income)) +
-      kpi("Por despachar", nf0.format(pending.length), pending.length ? "warn" : "") +
-      "</div>" +
+      '<div class="kpis" id="kpiBox"></div>' +
+
+      '<section class="card card--span card--attention" id="pendingCard"><div class="card__head"><h2>Pagos por confirmar</h2>' +
+      '<span class="muted small">Compara con los movimientos de tu banco: monto en Bs, referencia y teléfono.</span></div><div id="pendingBox"></div></section>' +
 
       '<div class="dash__grid">' +
       '<section class="card">' +
@@ -799,11 +959,21 @@
       "</section>" +
 
       '<section class="card card--span">' +
-      '<div class="card__head"><h2>Validar un pago</h2><span class="muted small">Escribe o escanea el código del conductor</span></div>' +
+      '<div class="card__head"><h2>Tus datos de Pago Móvil</h2><span class="muted small">Los conductores te pagan aquí. El dinero llega directo a tu cuenta.</span></div>' +
+      '<div class="form-grid form-grid--4">' +
+      '<label class="field"><span>Banco</span><select id="pmBank"><option value="">Elige el banco</option>' +
+      S.BANKS.map(function (b) { return '<option value="' + b[0] + '"' + (pm.bank === b[0] ? " selected" : "") + ">" + b[0] + " · " + esc(b[1]) + "</option>"; }).join("") + "</select></label>" +
+      '<label class="field"><span>Teléfono afiliado</span><input id="pmPhone" inputmode="tel" placeholder="0412 555 0101" value="' + esc(fmtPhone(pm.phone)) + '"></label>' +
+      '<label class="field"><span>RIF o cédula</span><input id="pmDoc" placeholder="J-12345678-9" value="' + esc(pm.doc) + '"></label>' +
+      '<label class="field"><span>Titular</span><input id="pmHolder" placeholder="Nombre de la empresa" value="' + esc(pm.holder) + '"></label>' +
+      "</div></section>" +
+
+      '<section class="card card--span">' +
+      '<div class="card__head"><h2>Despachar</h2><span class="muted small">Escribe o escanea el código del conductor</span></div>' +
       '<form class="validate" id="validateForm"><input id="codeInput" placeholder="TY-ABC-123" autocapitalize="characters" aria-label="Código de pago">' +
       '<button class="btn btn--primary" type="submit">Validar</button></form>' +
       '<div id="validateResult"></div>' +
-      '<h3 class="mt">Pagos recibidos</h3>' + paymentsTable(pays) +
+      '<h3 class="mt">Todos los pagos</h3><div id="paysBox"></div>' +
       "</section>" +
       "</div>" +
 
@@ -812,27 +982,63 @@
       '<button type="button" class="btn btn--primary btn--lg" id="saveBtn"' + (draft.dirty ? "" : " disabled") + ">Publicar cambios</button></div>" +
       "</div>";
 
+    renderDashPayments(st);
     bindDashboard(st);
   }
 
-  function kpi(label, value, tone) {
-    return '<div class="kpi' + (tone ? " kpi--" + tone : "") + '"><span>' + esc(label) + "</span><strong>" + value + "</strong></div>";
+  // Partes del panel que cambian cuando llegan pagos (se repintan sin tocar el formulario).
+  function renderDashPayments(st) {
+    if (!$("#kpiBox")) return;
+    var pays = stationPayments(st);
+    var t0 = startOfToday();
+    var m0 = new Date(); m0.setDate(1); m0.setHours(0, 0, 0, 0);
+    var good = function (p) { return p.status === "aprobado" || p.status === "despachado"; };
+    var today = pays.filter(function (p) { return good(p) && p.createdAt >= t0; });
+    var month = pays.filter(function (p) { return good(p) && p.createdAt >= m0.getTime(); });
+    var pending = pays.filter(function (p) { return p.status === "por_verificar"; });
+    var toDispatch = pays.filter(function (p) { return p.status === "aprobado"; });
+    $("#kpiBox").innerHTML =
+      kpi("Ventas hoy", bs(today.reduce(function (a, p) { return a + p.totalBs; }, 0)), "", today.length + " pagos · " + nf1.format(today.reduce(function (a, p) { return a + p.liters; }, 0)) + " L") +
+      kpi("Por confirmar", nf0.format(pending.length), pending.length ? "warn" : "") +
+      kpi("Por despachar", nf0.format(toDispatch.length), toDispatch.length ? "ok" : "") +
+      kpi("Comisión del mes", usd(month.reduce(function (a, p) { return a + (p.feeUsd || 0); }, 0)), "", (S.DEFAULTS.fee * 100) + " % de las ventas");
+
+    $("#pendingCard").classList.toggle("card--quiet", !pending.length);
+    $("#pendingBox").innerHTML = pending.length ? pending.map(function (p) {
+      return '<div class="vrow" data-row="' + esc(p.code) + '">' +
+        '<div class="vrow__amount"><strong>' + bs(p.totalBs) + "</strong><small>" + nf1.format(p.liters) + " L " + esc(fuelLabel(p.fuel)) + " · " + ago(p.createdAt) + "</small></div>" +
+        '<dl class="vrow__data"><div><dt>Referencia</dt><dd>' + esc(p.reference) + "</dd></div>" +
+        "<div><dt>Desde</dt><dd>" + esc(bankLabel(p.payerBank)) + "</dd></div>" +
+        "<div><dt>Teléfono</dt><dd>" + esc(fmtPhone(p.payerPhone)) + "</dd></div>" +
+        "<div><dt>Cédula</dt><dd>" + esc(p.payerDoc) + "</dd></div></dl>" +
+        '<div class="vrow__actions"><button type="button" class="btn btn--primary" data-approve="' + esc(p.code) + '">Llegó, confirmar</button>' +
+        '<button type="button" class="btn btn--ghost" data-reject="' + esc(p.code) + '">No llegó</button></div></div>';
+    }).join("") : '<p class="muted">No hay pagos esperando. Cuando un conductor pague, aparecerá aquí al momento.</p>';
+
+    $("#paysBox").innerHTML = paymentsTable(pays);
+    bindPaymentActions(st);
+  }
+
+  function kpi(label, value, tone, sub) {
+    return '<div class="kpi' + (tone ? " kpi--" + tone : "") + '"><span>' + esc(label) + "</span><strong>" + value + "</strong>" + (sub ? "<small>" + esc(sub) + "</small>" : "") + "</div>";
   }
 
   function paymentsTable(pays) {
-    if (!pays.length) return '<p class="muted">Aún no hay pagos en esta estación. Haz uno desde el mapa para probar el flujo completo.</p>';
-    return '<div class="table-wrap"><table class="table"><thead><tr><th>Código</th><th>Combustible</th><th>Litros</th><th>Total</th><th>Método</th><th>Hora</th><th>Estado</th></tr></thead><tbody>' +
-      pays.slice(0, 50).map(function (p) {
-        return "<tr><td><code>" + esc(p.code) + "</code></td><td>" + esc(p.fuelLabel) + "</td><td>" + nf1.format(p.liters) + "</td><td>" + usd(p.totalUsd) +
-          "</td><td>" + esc(METHOD_LABEL[p.method]) + "</td><td>" + new Date(p.createdAt).toLocaleTimeString("es-VE", { hour: "2-digit", minute: "2-digit" }) +
-          "</td><td>" + (p.status === "pagado" ? '<button type="button" class="btn btn--sm btn--primary" data-dispatch="' + esc(p.code) + '">Despachar</button>' : '<span class="badge badge--na">Despachado</span>') + "</td></tr>";
+    if (!pays.length) return '<p class="muted">Aún no hay pagos en esta estación.' + (S.LIVE ? "" : " Haz uno desde el mapa para probar el flujo completo.") + "</p>";
+    return '<div class="table-wrap"><table class="table"><thead><tr><th>Hora</th><th>Monto</th><th>Combustible</th><th>Referencia</th><th>Código</th><th>Estado</th></tr></thead><tbody>' +
+      pays.slice(0, 80).map(function (p) {
+        var st = S.STATUS[p.status];
+        var action = p.status === "aprobado" ? '<button type="button" class="btn btn--sm btn--primary" data-dispatch="' + esc(p.code) + '">Despachar</button>'
+          : '<span class="badge badge--' + st.tone + '">' + esc(st.label) + "</span>";
+        return "<tr><td>" + new Date(p.createdAt).toLocaleString("es-VE", { day: "2-digit", month: "short", hour: "2-digit", minute: "2-digit" }) +
+          "</td><td><b>" + bs(p.totalBs) + "</b></td><td>" + esc(fuelLabel(p.fuel)) + " · " + nf1.format(p.liters) + " L</td><td>" + esc(p.reference) +
+          "</td><td><code>" + (p.status === "aprobado" || p.status === "despachado" ? esc(p.code) : "—") + "</code></td><td>" + action + "</td></tr>";
       }).join("") + "</tbody></table></div>";
   }
 
   function markDirty() {
     draft.dirty = true;
-    var bar = $("#savebar");
-    bar.classList.add("is-dirty");
+    $("#savebar").classList.add("is-dirty");
     $("#saveMsg").textContent = "Tienes cambios sin publicar";
     $("#saveBtn").disabled = false;
   }
@@ -846,7 +1052,9 @@
         else if (key === "queue") draft.queue = val;
         else { var parts = key.split("."); draft.fuels[parts[1]].status = val; }
         draft.dirty = true;
+        var y = window.scrollY;
         renderDashboard(st);
+        window.scrollTo(0, y);
       };
     });
     $all("[data-price]", root).forEach(function (inp) {
@@ -873,47 +1081,84 @@
       toast("Precios ajustados a la modalidad. Revísalos antes de publicar.");
     };
     $("#hoursInput").oninput = function () { draft.hours = this.value; markDirty(); };
+    $("#pmBank").onchange = function () { draft.pm.bank = this.value; markDirty(); };
+    $("#pmPhone").oninput = function () { draft.pm.phone = this.value.replace(/\D/g, ""); markDirty(); };
+    $("#pmDoc").oninput = function () { draft.pm.doc = this.value.trim().toUpperCase(); markDirty(); };
+    $("#pmHolder").oninput = function () { draft.pm.holder = this.value; markDirty(); };
+
     $("#saveBtn").onclick = function () {
+      var btn = this;
+      if (draft.acceptsApp && !(draft.pm.bank && /^0\d{10}$/.test(draft.pm.phone) && draft.pm.doc)) {
+        toast("Para aceptar pagos, completa tus datos de Pago Móvil (banco, teléfono de 11 dígitos y RIF).", "err");
+        $("#pmBank").scrollIntoView({ behavior: "smooth", block: "center" });
+        return;
+      }
+      if (draft.rate <= 0) { toast("Escribe la tasa del día.", "err"); return; }
+      btn.disabled = true;
       S.saveStation(st.id, {
         open: draft.open, queue: draft.queue, acceptsApp: draft.acceptsApp, hours: draft.hours.trim(),
         modality: draft.modality, rate: draft.rate,
-        fuels: JSON.parse(JSON.stringify(draft.fuels))
-      });
-      draft.dirty = false;
-      refreshStation(st.id);
-      renderDashboard(st);
-      toast("Publicado. Los conductores ya ven los cambios en el mapa.", "ok");
+        fuels: JSON.parse(JSON.stringify(draft.fuels)), pm: Object.assign({}, draft.pm)
+      }).then(function () {
+        draft.dirty = false;
+        refreshStation(st.id);
+        renderDashboard(st);
+        toast("Publicado. Los conductores ya ven los cambios en el mapa.", "ok");
+      }).catch(function (e) { btn.disabled = false; toast(e.userMessage || "No se pudo publicar.", "err"); });
     };
     $("#logoutBtn").onclick = function () {
       if (draft.dirty && !armed(this, "¿Salir sin publicar? Toca otra vez")) return;
-      S.setSession(null); draft = null; renderManager();
+      S.signOut().then(function () { draft = null; renderManager(); });
     };
     $("#viewOnMap").onclick = function () { location.hash = "#estacion-" + st.id; };
 
     $("#validateForm").onsubmit = function (e) {
       e.preventDefault();
       var raw = ($("#codeInput").value || "").toUpperCase().replace(/^TANQUEYA:/, "").replace(/\s+/g, "");
-      if (/^TY[A-Z0-9]{6}$/.test(raw.replace(/-/g, ""))) { var c = raw.replace(/-/g, ""); raw = "TY-" + c.slice(2, 5) + "-" + c.slice(5); }
-      var p = S.payments().filter(function (x) { return x.code === raw; })[0];
+      var c = raw.replace(/-/g, "");
+      if (/^TY[A-Z0-9]{6}$/.test(c)) raw = "TY-" + c.slice(2, 5) + "-" + c.slice(5);
+      var p = findPayment(raw);
       var out = $("#validateResult");
       if (!p) { out.innerHTML = '<div class="alert alert--err">No existe ningún pago con el código <b>' + esc(raw || "vacío") + "</b>.</div>"; return; }
       if (p.stationId !== st.id) { out.innerHTML = '<div class="alert alert--err">Este pago es de otra estación (' + esc(p.stationName) + "). No despaches.</div>"; return; }
       if (p.status === "despachado") { out.innerHTML = '<div class="alert alert--warn">Este código ya se usó ' + esc(ago(p.dispatchedAt)) + ". No despaches de nuevo.</div>"; return; }
-      out.innerHTML = '<div class="alert alert--ok"><div><b>Pago válido.</b> Despacha ' + nf1.format(p.liters) + " L de " + esc(p.fuelLabel) + " · " + usd(p.totalUsd) + "</div>" +
+      if (p.status === "por_verificar") { out.innerHTML = '<div class="alert alert--warn">Este pago aún no está confirmado. Búscalo arriba en «Pagos por confirmar».</div>'; return; }
+      if (p.status === "rechazado") { out.innerHTML = '<div class="alert alert--err">Este pago fue rechazado. No despaches.</div>'; return; }
+      out.innerHTML = '<div class="alert alert--ok"><div><b>Pago válido.</b> Despacha ' + nf1.format(p.liters) + " L de " + esc(fuelLabel(p.fuel)) + " · " + bs(p.totalBs) + "</div>" +
         '<button type="button" class="btn btn--primary" data-dispatch="' + esc(p.code) + '">Marcar como despachado</button></div>';
-      bindDispatch(st);
+      bindPaymentActions(st);
     };
-    bindDispatch(st);
   }
 
-  function bindDispatch(st) {
-    $all("[data-dispatch]", $("#managerRoot")).forEach(function (b) {
+  function changeStatus(st, code, status, reason, okMsg) {
+    return S.setPaymentStatus(code, status, reason).then(function () {
+      renderDashPayments(st);
+      renderReceipts();
+      if (status === "despachado") $("#validateResult").innerHTML = "";
+      toast(okMsg, "ok");
+    }).catch(function (e) { toast(e.userMessage || "No se pudo guardar. Inténtalo de nuevo.", "err"); renderDashPayments(st); });
+  }
+
+  function bindPaymentActions(st) {
+    var root = $("#managerRoot");
+    $all("[data-approve]", root).forEach(function (b) {
+      b.onclick = function () { b.disabled = true; changeStatus(st, b.getAttribute("data-approve"), "aprobado", null, "Pago confirmado. El conductor ya tiene su código."); };
+    });
+    $all("[data-reject]", root).forEach(function (b) {
       b.onclick = function () {
-        S.updatePayment(b.getAttribute("data-dispatch"), { status: "despachado", dispatchedAt: Date.now() });
-        renderDashboard(st);
-        renderReceipts();
-        toast("Despacho registrado.", "ok");
+        var code = b.getAttribute("data-reject");
+        var actions = b.parentNode;
+        actions.innerHTML = '<span class="small muted">¿Por qué?</span>' + REJECT_REASONS.map(function (r, i) {
+          return '<button type="button" class="btn btn--ghost btn--sm" data-reason="' + i + '">' + esc(r) + "</button>";
+        }).join("") + '<button type="button" class="btn btn--link btn--sm" data-cancel>Cancelar</button>';
+        $all("[data-reason]", actions).forEach(function (rb) {
+          rb.onclick = function () { changeStatus(st, code, "rechazado", REJECT_REASONS[+rb.getAttribute("data-reason")], "Pago rechazado. Le avisamos al conductor."); };
+        });
+        $("[data-cancel]", actions).onclick = function () { renderDashPayments(st); };
       };
+    });
+    $all("[data-dispatch]", root).forEach(function (b) {
+      b.onclick = function () { b.disabled = true; changeStatus(st, b.getAttribute("data-dispatch"), "despachado", null, "Despacho registrado."); };
     });
   }
 
@@ -924,22 +1169,22 @@
     var states = app.stations.map(function (s) { return s._state || S.stateOf(s); });
     var known = states.filter(function (s) { return !s.unknown; });
     var withFuel = known.filter(function (s) { return S.overallTone(s) !== "out"; }).length;
-    var pays = S.payments();
+    var pays = S.payments().filter(function (p) { return p.status === "aprobado" || p.status === "despachado"; });
     var vol = pays.reduce(function (a, p) { return a + p.totalUsd; }, 0);
-    var fees = pays.reduce(function (a, p) { return a + p.feeUsd; }, 0);
+    var fees = pays.reduce(function (a, p) { return a + (p.feeUsd || 0); }, 0);
     openModal(
       '<p class="eyebrow">Para inversionistas</p><h2 id="modalTitle">Tanque ya</h2>' +
       '<p class="lead">El mapa en vivo del combustible en Venezuela: dónde hay, a qué precio, cuánta cola, y el pago desde el teléfono.</p>' +
       '<div class="kpis kpis--3">' +
       kpi("Estaciones en el mapa", nf0.format(app.stations.length)) +
       kpi("Con combustible ahora", known.length ? nf0.format(Math.round(withFuel / known.length * 100)) + " %" : "—") +
-      kpi("Pagos en esta demo", nf0.format(pays.length) + " · " + usd(vol)) +
+      kpi(S.LIVE ? "Pagos confirmados que ves" : "Pagos confirmados en esta demo", nf0.format(pays.length) + " · " + usd(vol)) +
       "</div>" +
       '<div class="about-grid">' +
       '<div><h3>El problema</h3><p>Los conductores no saben qué estación tiene combustible ni a qué precio, porque conviven estaciones subsidiadas en bolívares y estaciones con precio internacional en dólares. Pierden horas en colas y viajes inútiles.</p></div>' +
-      '<div><h3>La solución</h3><p>Los gerentes publican disponibilidad, precio y tasa del día en un toque. Los conductores reportan la cola como en un mapa de tráfico. Se paga antes de llegar y se valida con un código QR en la bomba.</p></div>' +
-      '<div><h3>Cómo gana dinero</h3><p>Tarifa de servicio baja por cada pago (' + (S.DEFAULTS.serviceFee * 100) + " % en esta demo, " + usd(fees) + ' generados aquí). Plan para cadenas con varias estaciones. Datos agregados de precios y abastecimiento para flotas y empresas.</p></div>' +
-      '<div><h3>Siguientes pasos</h3><p>Conectar un procesador de pagos autorizado en Venezuela. Servidor con base de datos compartida. Piloto con estaciones reales en una ciudad. App instalable en tienda.</p></div>' +
+      '<div><h3>La solución</h3><p>Los gerentes publican disponibilidad, precio y tasa del día en un toque. Los conductores reportan la cola como en un mapa de tráfico. Se paga con Pago Móvil directo a la estación, el gerente lo confirma y se despacha con un código QR.</p></div>' +
+      '<div><h3>Cómo gana dinero</h3><p>Comisión baja que paga la estación por cada venta cobrada con la app (' + (S.DEFAULTS.fee * 100) + " %; " + usd(fees) + ' en los pagos que ves). El dinero del conductor va directo a la estación, así que Tanque ya no custodia fondos. Plan para cadenas con varias estaciones. Datos agregados de precios y abastecimiento para flotas y empresas.</p></div>' +
+      '<div><h3>Siguientes pasos</h3><p>Piloto con estaciones reales en una ciudad. Verificación automática de Pago Móvil con los bancos. App en las tiendas.</p></div>' +
       "</div>" +
       '<p class="demo-note">Esta demo no inventa cifras de mercado: los números de arriba salen de los datos que estás viendo en la propia demo.</p>',
       { wide: true });
@@ -956,19 +1201,20 @@
         : EMBED ? "<div><b>Vista previa:</b> aquí se muestran " + nf0.format(app.stations.length) + " estaciones de ejemplo con nombres genéricos. La versión publicada en tu dominio carga las estaciones reales de OpenStreetMap y el mapa completo.</div>"
         : "<div><b>Estaciones de demostración:</b> no se pudo descargar el listado real de OpenStreetMap (¿sin internet?). Se muestran " + nf0.format(app.stations.length) + " estaciones de ejemplo con nombres genéricos.</div>") +
       "</div>" +
-      "<p><b>Disponibilidad, precio y cola:</b> los publica el gerente desde su panel y los conductores reportan la cola. " +
-      "Para que la demo no se vea vacía, las estaciones sin datos muestran valores <b>simulados</b>, marcados como tales en cada ficha.</p>" +
-      '<label class="switch"><input type="checkbox" id="simToggle"' + (set.simulate ? " checked" : "") + "><span></span>Mostrar datos simulados en las estaciones sin reportes</label>" +
-      "<p><b>Pagos:</b> simulados. No se cobra dinero ni se envía ningún dato.</p>" +
-      "<p><b>Dónde se guarda:</b> en este navegador. Para que gerentes y conductores compartan los datos en distintos teléfonos hace falta el servidor de la siguiente fase.</p>" +
+      "<p><b>Disponibilidad, precio y cola:</b> los publica el gerente desde su panel y los conductores reportan la cola.</p>" +
+      (S.LIVE ? "" : "<p>Para que la demo no se vea vacía, las estaciones sin datos muestran valores <b>simulados</b>, marcados como tales en cada ficha.</p>" +
+        '<label class="switch"><input type="checkbox" id="simToggle"' + (set.simulate ? " checked" : "") + "><span></span>Mostrar datos simulados en las estaciones sin reportes</label>") +
+      (S.LIVE
+        ? "<p><b>Pagos:</b> Pago Móvil directo a la cuenta de cada estación. El gerente confirma cada pago con la referencia de su banco.</p><p><b>Dónde se guarda:</b> en el servidor de Tanque ya, compartido entre todos los teléfonos.</p>"
+        : "<p><b>Pagos:</b> de demostración. No se mueve dinero.</p><p><b>Dónde se guarda:</b> en este navegador. Con el servidor activado (ver README), se comparte entre todos los teléfonos.</p>") +
       '<div class="modal__actions modal__actions--2">' +
       (osm || EMBED ? "" : '<button type="button" class="btn btn--ghost" id="retryOsm">Reintentar descarga</button>') +
-      '<button type="button" class="btn btn--ghost" id="resetDemo">Reiniciar la demo</button></div>');
-    $("#simToggle").onchange = function () {
+      (S.LIVE ? "" : '<button type="button" class="btn btn--ghost" id="resetDemo">Reiniciar la demo</button>') + "</div>");
+    if ($("#simToggle")) $("#simToggle").onchange = function () {
       S.setSettings({ simulate: this.checked });
       renderMarkers(); renderList(); if (app.selected) renderDetail();
     };
-    $("#resetDemo").onclick = function () {
+    if ($("#resetDemo")) $("#resetDemo").onclick = function () {
       if (!armed(this, "Toca otra vez para borrar todo")) return;
       S.resetDemo(); draft = null; closeModal();
       renderMarkers(); renderList(); renderReceipts(); renderManager();
@@ -1107,13 +1353,58 @@
   /* =========================================================
    * Arranque
    * ======================================================= */
+  // Cuando llegan datos nuevos (de otro teléfono o de otra pestaña), se repinta lo necesario.
+  var lastSig = "";
+  function afterDataChange() {
+    var sig = JSON.stringify([S.payments().map(function (p) { return p.code + p.status; }), S.manager()]);
+    var changed = {}, any = false;
+    app.stations.forEach(function (st) {
+      var state = S.stateOf(st);
+      var sigS = JSON.stringify(state);
+      if (st._sig === sigS) return;
+      var first = st._sig === undefined;
+      st._sig = sigS;
+      if (first) return;
+      changed[st.id] = true; any = true;
+      refreshStation(st.id);
+    });
+    if (any && !app.search) renderList();
+    if (app.selected && changed[app.selected] && !$("#detailPane").hidden) {
+      var y = $("#detailPane").scrollTop; renderDetail(); $("#detailPane").scrollTop = y;
+    }
+    if (sig !== lastSig) {
+      lastSig = sig;
+      renderReceipts();
+      refreshOpenReceipt();
+      var m = S.manager(), st = m && managerStation(m);
+      if (st && document.body.getAttribute("data-view") === "gerentes") renderDashPayments(st);
+    }
+  }
+  function poll() {
+    if (document.hidden) return;
+    S.refresh().then(afterDataChange).catch(function () {});
+  }
+  window.addEventListener("storage", function () { if (!S.LIVE) poll(); });
+  document.addEventListener("visibilitychange", poll);
+
+  if (!S.LIVE) $("#demoRibbon").textContent = "Demostración · no se mueve dinero";
+  else $("#demoRibbon").hidden = true;
+
   initMap();
   var cache = EMBED ? null : S.cachedOsm();
-  if (cache) setStations(cache.stations, "osm");
-  else { setStations(window.DEMO_STATIONS || [], "demo"); if (!EMBED) { app.source = "loading"; updateDataChip(); } }
-  renderMarkers();
-  renderList();
-  renderReceipts();
-  route();
-  if (!cache && !EMBED) loadOsm(false);
+  function start() {
+    if (cache) setStations(cache.stations, "osm");
+    else { setStations(S.LIVE ? [] : (window.DEMO_STATIONS || []), "demo"); if (!EMBED) { app.source = "loading"; updateDataChip(); } }
+    renderMarkers();
+    renderList();
+    renderReceipts();
+    route();
+    lastSig = JSON.stringify([S.payments().map(function (p) { return p.code + p.status; }), S.manager()]);
+    if (!cache && !EMBED) loadOsm(false);
+    setInterval(poll, S.LIVE ? 10000 : 4000);
+  }
+  S.init().then(start).catch(function (e) {
+    start();
+    toast((e && e.userMessage) || "No se pudo conectar con el servidor. Revisa tu conexión.", "err");
+  });
 })();

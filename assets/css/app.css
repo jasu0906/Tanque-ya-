@@ -532,3 +532,43 @@ body[data-view="gerentes"] .demo-ribbon { display: none; }
   text-shadow: 0 0 3px var(--land), 0 0 3px var(--land);
 }
 .btn.is-armed { background: var(--out-soft); color: var(--out-ink); border-color: transparent; }
+
+/* ---------- Pago Móvil ---------- */
+.pmbox { margin: 14px 0 8px; padding: 6px 16px; border: 1.5px solid var(--brand); border-radius: 14px; background: color-mix(in srgb, var(--brand-soft) 35%, var(--surface)); }
+.pmrow { display: flex; justify-content: space-between; align-items: center; gap: 12px; padding: 10px 0; border-top: 1px solid var(--line); }
+.pmrow:first-child { border-top: 0; }
+.pmrow dt { color: var(--text-2); font-size: 13.5px; }
+.pmrow dd { margin: 0; display: flex; align-items: center; gap: 10px; text-align: right; min-width: 0; }
+.pmrow dd strong { font-size: 16px; font-variant-numeric: tabular-nums; overflow-wrap: anywhere; }
+.pmrow--amount dd strong { font-size: 22px; }
+.form-error { margin: 0; padding: 10px 12px; border-radius: 10px; background: var(--out-soft); color: var(--out-ink); font-size: 14px; font-weight: 600; }
+.receipt__icon { width: 56px; height: 56px; border-radius: 50%; background: var(--ok); color: #fff; display: grid; place-items: center; }
+.receipt__icon svg { width: 32px; height: 32px; }
+.receipt__icon--warn { background: var(--warn); }
+.receipt__icon--out { background: var(--out); }
+.receipt--por_verificar .receipt__icon--warn svg { animation: spin 6s linear infinite; }
+.rcard__wait { display: grid; place-items: center; width: 100%; height: 100%; border-radius: 8px; }
+.rcard__wait svg { width: 28px; height: 28px; }
+.rcard__wait--warn { background: var(--warn-soft); color: var(--warn-ink); }
+.rcard__wait--out { background: var(--out-soft); color: var(--out-ink); }
+.rcard--rechazado, .rcard--despachado { opacity: .75; }
+.kpi small { color: var(--text-2); font-size: 12.5px; }
+.form-grid--4 { grid-template-columns: repeat(4, 1fr); }
+.card--attention { border: 1.5px solid var(--warn); background: color-mix(in srgb, var(--warn-soft) 40%, var(--surface)); margin-bottom: 16px; }
+.card--attention.card--quiet { border-color: var(--line); background: var(--surface); }
+.vrow { display: grid; grid-template-columns: 180px 1fr auto; gap: 16px; align-items: center; padding: 14px 0; border-top: 1px solid var(--line); }
+.vrow:first-child { border-top: 0; }
+.vrow__amount { display: flex; flex-direction: column; }
+.vrow__amount strong { font-size: 22px; font-variant-numeric: tabular-nums; }
+.vrow__amount small { color: var(--text-2); }
+.vrow__data { margin: 0; display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 8px 16px; }
+.vrow__data dt { font-size: 12px; color: var(--text-2); text-transform: uppercase; letter-spacing: .04em; }
+.vrow__data dd { margin: 0; font-weight: 700; font-variant-numeric: tabular-nums; overflow-wrap: anywhere; }
+.vrow__actions { display: flex; gap: 8px; flex-wrap: wrap; justify-content: flex-end; align-items: center; }
+@media (max-width: 899px) {
+  .form-grid--4 { grid-template-columns: 1fr; }
+  .vrow { grid-template-columns: 1fr; gap: 10px; }
+  .vrow__data { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .vrow__actions { justify-content: stretch; }
+  .vrow__actions .btn { flex: 1; }
+}

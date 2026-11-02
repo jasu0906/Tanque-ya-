@@ -88,12 +88,7 @@
       <div class="page__head">
         <div>
           <h1>Mis pagos</h1>
-          <p class="muted">Muestra el código QR al despachador para que te sirva el combustible.</p>
-        </div>
-        <div class="wallet">
-          <span class="muted">Saldo Tanque ya</span>
-          <strong id="walletBalance">$0,00</strong>
-          <button class="btn btn--ghost btn--sm" id="topupBtn" type="button">Recargar</button>
+          <p class="muted">Cuando la estación confirme tu Pago Móvil, muestra el código QR al despachador.</p>
         </div>
       </div>
       <div id="receiptList" class="receipts"></div>
@@ -118,13 +113,14 @@
 
   <div class="toast" id="toast" role="status" aria-live="polite" hidden></div>
 
-  <div class="demo-ribbon" id="demoRibbon">Demostración · los pagos son simulados</div>
+  <div class="demo-ribbon" id="demoRibbon">Demostración · no se mueve dinero</div>
 
   <script src="vendor/leaflet/leaflet.js"></script>
   <script src="vendor/markercluster/leaflet.markercluster.js"></script>
   <script src="vendor/qrcode/qrcode.js"></script>
   <script src="data/venezuela-outline.js"></script>
   <script src="data/demo-stations.js"></script>
+  <script src="assets/js/config.js"></script>
   <script src="assets/js/store.js"></script>
   <script src="assets/js/app.js"></script>
 </body>

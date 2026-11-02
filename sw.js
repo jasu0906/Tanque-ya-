@@ -1,8 +1,8 @@
 /* Tanque ya: service worker. Guarda la app para que abra rápido y sin conexión. */
-var CACHE = "tanqueya-v1";
+var CACHE = "tanqueya-v2";
 var SHELL = [
   "./", "index.html", "manifest.webmanifest",
-  "assets/css/app.css", "assets/js/app.js", "assets/js/store.js",
+  "assets/css/app.css", "assets/js/app.js", "assets/js/store.js", "assets/js/config.js",
   "assets/img/icon.svg", "assets/img/icon-192.png",
   "data/venezuela-outline.js", "data/demo-stations.js",
   "vendor/leaflet/leaflet.js", "vendor/leaflet/leaflet.css",
@@ -24,6 +24,8 @@ self.addEventListener("activate", function (e) {
 self.addEventListener("fetch", function (e) {
   var url = new URL(e.request.url);
   if (e.request.method !== "GET" || url.origin !== self.location.origin) return;
+  // config.js siempre de la red: así un cambio de servidor llega al momento.
+  if (/config\.js$/.test(url.pathname)) return;
   e.respondWith(
     fetch(e.request).then(function (res) {
       var copy = res.clone();
