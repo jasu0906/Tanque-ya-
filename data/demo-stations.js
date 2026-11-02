@@ -61,4 +61,5 @@
     }
   });
   window.DEMO_STATIONS = out;
+  window.DEMO_CITIES = cities;
 })();

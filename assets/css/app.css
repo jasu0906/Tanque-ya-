@@ -22,6 +22,8 @@
   --na: #94a3b8;
   --na-soft: #eef2f6;
   --na-ink: #475569;
+  --sea: #cfe3e6;
+  --land: #f3f1ea;
   --radius: 14px;
   --radius-sm: 10px;
   --shadow: 0 1px 2px rgba(16, 24, 22, .06), 0 8px 24px rgba(16, 24, 22, .08);
@@ -37,6 +39,7 @@
     --text: #e7efed; --text-2: #9fb0ac;
     --ok-soft: #12321f; --ok-ink: #86efac; --warn-soft: #3a2a0c; --warn-ink: #fcd34d;
     --out-soft: #3b1414; --out-ink: #fca5a5; --na-soft: #1e2a33; --na-ink: #b4c2cf;
+    --sea: #0e2226; --land: #1a2422;
     --shadow: 0 1px 2px rgba(0,0,0,.4), 0 8px 24px rgba(0,0,0,.35);
     color-scheme: dark;
   }
@@ -47,6 +50,7 @@
   --text: #e7efed; --text-2: #9fb0ac;
   --ok-soft: #12321f; --ok-ink: #86efac; --warn-soft: #3a2a0c; --warn-ink: #fcd34d;
   --out-soft: #3b1414; --out-ink: #fca5a5; --na-soft: #1e2a33; --na-ink: #b4c2cf;
+  --sea: #0e2226; --land: #1a2422;
   color-scheme: dark;
 }
 
@@ -517,3 +521,14 @@ body[data-view="gerentes"] .demo-ribbon { display: none; }
   #dataLabel { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 }
 .receipt .modal__actions { width: 100%; }
+
+/* vista previa sin teselas */
+#map.map--offline { background: var(--sea); }
+.map--offline .ve-mask { fill-opacity: 0 !important; }
+.ve-land { fill: var(--land); }
+.city-label span {
+  position: absolute; transform: translate(-50%, 14px); white-space: nowrap;
+  font-size: 11.5px; font-weight: 650; color: var(--text-2); letter-spacing: .02em;
+  text-shadow: 0 0 3px var(--land), 0 0 3px var(--land);
+}
+.btn.is-armed { background: var(--out-soft); color: var(--out-ink); border-color: transparent; }

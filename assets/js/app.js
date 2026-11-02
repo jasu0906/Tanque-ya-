@@ -3,6 +3,8 @@
   "use strict";
 
   var S = window.TYStore;
+  // Modo vista previa: sin teselas externas ni descarga de OpenStreetMap.
+  var EMBED = !!window.TY_EMBED;
   var FUELS = S.FUELS;
 
   /* =========================================================
@@ -76,6 +78,15 @@
     else { dot.className = "dot dot--warn"; label.textContent = n + " estaciones demo"; }
   }
 
+  // Confirmación en dos toques (los diálogos del navegador no siempre se muestran).
+  function armed(btn, msg) {
+    if (btn.getAttribute("data-armed") === "1") return true;
+    var old = btn.textContent;
+    btn.setAttribute("data-armed", "1"); btn.textContent = msg; btn.classList.add("is-armed");
+    setTimeout(function () { btn.removeAttribute("data-armed"); btn.textContent = old; btn.classList.remove("is-armed"); }, 4000);
+    return false;
+  }
+
   /* =========================================================
    * Toast y modal
    * ======================================================= */
@@ -139,7 +150,8 @@
         }).addTo(map);
       }
     });
-    carto.addTo(map);
+    if (EMBED) { map.getContainer().classList.add("map--offline"); map.attributionControl.addAttribution("Contorno: Natural Earth"); }
+    else carto.addTo(map);
 
     // Resalta Venezuela y oscurece lo de fuera.
     if (window.VE_OUTLINE) {
@@ -150,7 +162,15 @@
       L.polygon([world].concat(holes), {
         stroke: false, fillColor: "#0b1f24", fillOpacity: 0.16, interactive: false, className: "ve-mask"
       }).addTo(map);
-      L.polygon(holes, { color: "#0f766e", weight: 1.5, opacity: 0.8, fill: false, interactive: false }).addTo(map);
+      L.polygon(holes, { color: "#0f766e", weight: 1.5, opacity: 0.8, fill: EMBED, fillColor: "var(--land)", fillOpacity: 1, interactive: false, className: "ve-land" }).addTo(map);
+      if (EMBED && window.DEMO_CITIES) {
+        var labels = L.layerGroup(window.DEMO_CITIES.map(function (c) {
+          return L.marker([c[2], c[3]], { interactive: false, keyboard: false,
+            icon: L.divIcon({ className: "city-label", html: "<span>" + esc(c[0]) + "</span>", iconSize: [0, 0] }) });
+        }));
+        var syncLabels = function () { if (map.getZoom() >= 7) labels.addTo(map); else map.removeLayer(labels); };
+        map.on("zoomend", syncLabels); syncLabels();
+      }
     }
 
     app.cluster = L.markerClusterGroup({
@@ -296,7 +316,7 @@
       app.map.panTo([st.lat, st.lng]);
     }
     renderDetail();
-    if (location.hash !== "#estacion/" + id) history.replaceState(null, "", "#estacion/" + id);
+    if (location.hash !== "#estacion-" + id) history.replaceState(null, "", "#estacion-" + id);
   }
 
   function closeStation() {
@@ -865,10 +885,10 @@
       toast("Publicado. Los conductores ya ven los cambios en el mapa.", "ok");
     };
     $("#logoutBtn").onclick = function () {
-      if (draft.dirty && !window.confirm("Tienes cambios sin publicar. ¿Salir igualmente?")) return;
+      if (draft.dirty && !armed(this, "¿Salir sin publicar? Toca otra vez")) return;
       S.setSession(null); draft = null; renderManager();
     };
-    $("#viewOnMap").onclick = function () { location.hash = "#estacion/" + st.id; };
+    $("#viewOnMap").onclick = function () { location.hash = "#estacion-" + st.id; };
 
     $("#validateForm").onsubmit = function (e) {
       e.preventDefault();
@@ -933,6 +953,7 @@
       '<div class="alert ' + (osm ? "alert--ok" : "alert--warn") + '">' +
       (osm ? "<div><b>Estaciones reales:</b> " + nf0.format(app.stations.length) + " estaciones de servicio de Venezuela tomadas de OpenStreetMap, un mapa abierto que hace la comunidad.</div>"
         : app.source === "loading" ? "<div>Descargando el listado real de estaciones desde OpenStreetMap…</div>"
+        : EMBED ? "<div><b>Vista previa:</b> aquí se muestran " + nf0.format(app.stations.length) + " estaciones de ejemplo con nombres genéricos. La versión publicada en tu dominio carga las estaciones reales de OpenStreetMap y el mapa completo.</div>"
         : "<div><b>Estaciones de demostración:</b> no se pudo descargar el listado real de OpenStreetMap (¿sin internet?). Se muestran " + nf0.format(app.stations.length) + " estaciones de ejemplo con nombres genéricos.</div>") +
       "</div>" +
       "<p><b>Disponibilidad, precio y cola:</b> los publica el gerente desde su panel y los conductores reportan la cola. " +
@@ -941,14 +962,14 @@
       "<p><b>Pagos:</b> simulados. No se cobra dinero ni se envía ningún dato.</p>" +
       "<p><b>Dónde se guarda:</b> en este navegador. Para que gerentes y conductores compartan los datos en distintos teléfonos hace falta el servidor de la siguiente fase.</p>" +
       '<div class="modal__actions modal__actions--2">' +
-      (osm ? "" : '<button type="button" class="btn btn--ghost" id="retryOsm">Reintentar descarga</button>') +
+      (osm || EMBED ? "" : '<button type="button" class="btn btn--ghost" id="retryOsm">Reintentar descarga</button>') +
       '<button type="button" class="btn btn--ghost" id="resetDemo">Reiniciar la demo</button></div>');
     $("#simToggle").onchange = function () {
       S.setSettings({ simulate: this.checked });
       renderMarkers(); renderList(); if (app.selected) renderDetail();
     };
     $("#resetDemo").onclick = function () {
-      if (!window.confirm("Se borrarán los cambios de los gerentes, los reportes y los pagos de esta demo.")) return;
+      if (!armed(this, "Toca otra vez para borrar todo")) return;
       S.resetDemo(); draft = null; closeModal();
       renderMarkers(); renderList(); renderReceipts(); renderManager();
       if (app.selected) renderDetail();
@@ -992,7 +1013,7 @@
     document.body.setAttribute("data-view", view);
     if (view === "mapa") {
       app.map.invalidateSize({ pan: false });
-      var m = h.match(/^#estacion\/(.+)$/);
+      var m = h.match(/^#estacion-(.+)$/);
       var id = m && decodeURIComponent(m[1]);
       if (id && app.byId[id]) {
         if (app.selected !== id) openStation(id);
@@ -1035,6 +1056,7 @@
 
   $("#panelHandle").onclick = function () { $("#panel").classList.toggle("panel--open"); };
 
+  if (EMBED) $("#locateBtn").hidden = true;
   $("#locateBtn").onclick = function () {
     if (!navigator.geolocation) { toast("Tu navegador no permite ubicarte.", "err"); return; }
     var btn = this;
@@ -1061,7 +1083,7 @@
    * ======================================================= */
   var deferredInstall = null;
   var installBtn = $("#installBtn");
-  var standalone = window.matchMedia("(display-mode: standalone)").matches || window.navigator.standalone;
+  var standalone = EMBED || window.matchMedia("(display-mode: standalone)").matches || window.navigator.standalone;
   if (!standalone) installBtn.hidden = false;
   window.addEventListener("beforeinstallprompt", function (e) { e.preventDefault(); deferredInstall = e; installBtn.hidden = false; });
   installBtn.onclick = function () {
@@ -1078,7 +1100,7 @@
   };
   window.addEventListener("appinstalled", function () { installBtn.hidden = true; toast("Tanque ya instalada.", "ok"); });
 
-  if ("serviceWorker" in navigator && location.protocol === "https:") {
+  if (!EMBED && "serviceWorker" in navigator && location.protocol === "https:") {
     navigator.serviceWorker.register("sw.js").catch(function () {});
   }
 
@@ -1086,12 +1108,12 @@
    * Arranque
    * ======================================================= */
   initMap();
-  var cache = S.cachedOsm();
+  var cache = EMBED ? null : S.cachedOsm();
   if (cache) setStations(cache.stations, "osm");
-  else { setStations(window.DEMO_STATIONS || [], "demo"); app.source = "loading"; updateDataChip(); }
+  else { setStations(window.DEMO_STATIONS || [], "demo"); if (!EMBED) { app.source = "loading"; updateDataChip(); } }
   renderMarkers();
   renderList();
   renderReceipts();
   route();
-  if (!cache) loadOsm(false);
+  if (!cache && !EMBED) loadOsm(false);
 })();
