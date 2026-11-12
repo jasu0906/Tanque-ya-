@@ -1,0 +1,98 @@
+<!doctype html>
+<html lang="es">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Tanque ya · hojas para visitas</title>
+<style>
+  @page { size: A4; margin: 16mm; }
+  * { box-sizing: border-box; }
+  body { margin: 0; font-family: "Segoe UI", system-ui, -apple-system, Roboto, Arial, sans-serif; color: #0f1f1c; font-size: 12.5pt; line-height: 1.45; background: #eef3f1; }
+  .sheet { background: #fff; max-width: 190mm; margin: 12px auto; padding: 14mm; page-break-after: always; break-after: page; }
+  .sheet:last-child { page-break-after: auto; break-after: auto; }
+  header { display: flex; align-items: center; gap: 12px; border-bottom: 3px solid #0f766e; padding-bottom: 10px; }
+  header img { width: 46px; height: 46px; }
+  header b { font-size: 20pt; letter-spacing: -.02em; }
+  header span { margin-left: auto; font-size: 10pt; color: #50625e; text-align: right; }
+  h1 { font-size: 23pt; line-height: 1.15; margin: 22px 0 6px; letter-spacing: -.02em; }
+  .lead { font-size: 13.5pt; color: #33443f; margin: 0 0 16px; }
+  h2 { font-size: 11pt; text-transform: uppercase; letter-spacing: .07em; color: #0f766e; margin: 20px 0 6px; }
+  ul { margin: 0; padding-left: 20px; }
+  li { margin-bottom: 7px; }
+  .box { border: 1.5px solid #dbe4e1; border-radius: 10px; padding: 12px 14px; margin-top: 8px; }
+  .blank { display: inline-block; border-bottom: 1.5px solid #0f1f1c; min-width: 62mm; height: 1.2em; vertical-align: bottom; }
+  .blank--s { min-width: 30mm; }
+  .contact { display: grid; grid-template-columns: 1fr 1fr; gap: 10px 18px; margin-top: 8px; }
+  .foot { margin-top: 18px; font-size: 10pt; color: #50625e; }
+  @media print { body { background: #fff; } .sheet { margin: 0; padding: 0; max-width: none; } .noprint { display: none; } }
+  .noprint { max-width: 190mm; margin: 12px auto; padding: 0 14px; font-size: 11pt; color: #33443f; }
+</style>
+</head>
+<body>
+<p class="noprint">Dos hojas para dejar en las visitas: una para estaciones y otra para flotas. Imprime varias copias y rellena a mano los espacios en blanco.</p>
+
+<section class="sheet">
+  <header><img src="../assets/img/icon.svg" alt=""><b>Tanque ya</b><span>Para estaciones de servicio</span></header>
+  <h1>Que los conductores sepan que usted tiene combustible</h1>
+  <p class="lead">Tanque ya es un mapa en el teléfono donde los conductores ven qué estaciones tienen combustible, a qué precio y con cuánta cola.</p>
+
+  <h2>Qué gana su estación</h2>
+  <ul>
+    <li><b>Avisa con un toque.</b> Cuando llega la gandola, lo marca en el teléfono y los conductores lo ven al momento.</li>
+    <li><b>El cliente llega informado.</b> Ya sabe el precio en dólares y en bolívares a la tasa que usted puso.</li>
+    <li><b>Cobro ordenado.</b> El conductor le paga por Pago Móvil directo a su cuenta. Usted confirma que llegó y despacha con un código. El dinero nunca pasa por Tanque ya.</li>
+    <li><b>Cierre del día más fácil.</b> Tiene la lista de pagos confirmados, con monto, referencia y hora.</li>
+  </ul>
+
+  <h2>Qué le pedimos</h2>
+  <ul>
+    <li>Probarla 30 días.</li>
+    <li>Actualizar con un toque cuando algo cambie: llegó combustible, se acabó o todo sigue igual.</li>
+    <li>Decirnos con franqueza qué le sirve y qué no.</li>
+  </ul>
+
+  <h2>Cuánto cuesta</h2>
+  <div class="box">La prueba de 30 días es gratis y sin compromiso. Después: <span class="blank"></span></div>
+
+  <h2>Contacto</h2>
+  <div class="contact">
+    <div>Nombre: <span class="blank"></span></div>
+    <div>Teléfono: <span class="blank"></span></div>
+    <div style="grid-column: 1 / -1">Vea la demostración en: <span class="blank" style="min-width: 110mm"></span></div>
+  </div>
+  <p class="foot">Tanque ya es un proyecto independiente en fase de prueba. No está afiliado a PDVSA ni a ningún organismo público.</p>
+</section>
+
+<section class="sheet">
+  <header><img src="../assets/img/icon.svg" alt=""><b>Tanque ya</b><span>Para empresas con vehículos</span></header>
+  <h1>Sepa dónde y cuánto carga cada uno de sus vehículos</h1>
+  <p class="lead">Tanque ya ayuda a sus choferes a encontrar combustible sin perder horas en cola, y a usted a llevar la cuenta de cada carga.</p>
+
+  <h2>Qué gana su empresa</h2>
+  <ul>
+    <li><b>Menos horas perdidas.</b> Sus choferes ven en el teléfono dónde hay combustible y cuánta cola antes de salir.</li>
+    <li><b>Cada carga registrada.</b> Placa, litros, precio, estación y hora. Sin recibos de papel.</li>
+    <li><b>Resumen del mes por vehículo.</b> Cuánto gastó cada uno, listo para abrir en Excel.</li>
+    <li><b>Pago directo a la estación</b> por Pago Móvil, con un código que el despachador valida.</li>
+  </ul>
+
+  <h2>Qué le pedimos</h2>
+  <ul>
+    <li>Probarla un mes con <span class="blank blank--s"></span> vehículos.</li>
+    <li>Decirnos en qué estaciones cargan sus choferes: empezamos por sumar esas.</li>
+    <li>Contarnos qué le falta para que le sirva de verdad.</li>
+  </ul>
+
+  <h2>Cuánto cuesta</h2>
+  <div class="box">La prueba de un mes es gratis y sin compromiso. Después: <span class="blank"></span> por vehículo al mes.</div>
+
+  <h2>Contacto</h2>
+  <div class="contact">
+    <div>Nombre: <span class="blank"></span></div>
+    <div>Teléfono: <span class="blank"></span></div>
+    <div style="grid-column: 1 / -1">Vea la demostración en: <span class="blank" style="min-width: 110mm"></span></div>
+  </div>
+  <p class="foot">Tanque ya es un proyecto independiente en fase de prueba. El registro de cargas funciona en las estaciones que usan Tanque ya.</p>
+</section>
+</body>
+</html>

@@ -93,6 +93,10 @@ Si cambias el porcentaje, cámbialo en `supabase/schema.sql` (función `prepare_
 - Revisa la lista de códigos de banco en `assets/js/store.js` (`BANKS`).
 - Las estaciones del mapa vienen de OpenStreetMap y no están verificadas. Solo las que actives tú aceptan pagos.
 
+## Material para visitas
+
+En [`material/`](material/) están las dos hojas para dejar en las visitas (una para estaciones y otra para flotas): `hojas-visitas.pdf` para imprimir y `hojas-visitas.html` para editar el texto.
+
 ## Estructura
 
 ```
