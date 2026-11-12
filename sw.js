@@ -1,5 +1,5 @@
 /* Tanque ya: service worker. Guarda la app para que abra rápido y sin conexión. */
-var CACHE = "tanqueya-v2";
+var CACHE = "tanqueya-v3";
 var SHELL = [
   "./", "index.html", "manifest.webmanifest",
   "assets/css/app.css", "assets/js/app.js", "assets/js/store.js", "assets/js/config.js",

@@ -72,6 +72,9 @@
     return code || "";
   }
 
+  // Frescura: pasado STALE el dato se marca como viejo; pasado EXPIRE deja de contar.
+  var HOUR = 3600000;
+  var FRESH = { stale: 6 * HOUR, expire: 24 * HOUR, restock: 6 * HOUR, queue: 3 * HOUR };
   var DEFAULTS = { rate: 230.0, priceIntl: 0.5, priceSubs: 0.02, fee: FEE };
 
   /* ---------- utilidades ---------- */
@@ -139,6 +142,7 @@
     var anyFuel = FUELS.some(function (f) { return fuels[f.key].status === "ok" || fuels[f.key].status === "low"; });
     var queue = anyFuel ? pick(r, { none: 0.3, short: 0.4, long: 0.3 }) : "empty";
     var minutesAgo = 4 + Math.floor(r() * 170);
+    var restock = anyFuel && r() < 0.18;
     var bank = BANKS[Math.floor(r() * BANKS.length)][0];
     var n = 1000 + Math.floor(r() * 8999);
     return {
@@ -149,6 +153,7 @@
       acceptsApp: r() < 0.7,
       pm: { bank: bank, phone: "0412555" + n, doc: "J-40" + n + "55-1", holder: st.name + " (demo)" },
       updatedAt: Date.now() - minutesAgo * 60000,
+      restockedAt: restock ? Date.now() - minutesAgo * 60000 : null,
       updatedBy: "simulado",
       simulated: true
     };
@@ -159,7 +164,7 @@
       fuels: { g91: { status: null, price: null }, g95: { status: null, price: null }, diesel: { status: null, price: null } },
       modality: "intl", rate: DEFAULTS.rate, open: true, hours: "", queue: null, acceptsApp: false,
       pm: { bank: "", phone: "", doc: "", holder: "" },
-      updatedAt: null, updatedBy: null, simulated: false, unknown: true
+      updatedAt: null, restockedAt: null, updatedBy: null, simulated: false, unknown: true
     };
   }
 
@@ -179,14 +184,24 @@
       base.unknown = false;
       base.registered = true;
     }
-    var reps = cache.reports[st.id] || [];
+    var now = Date.now();
+    var age = base.updatedAt ? now - base.updatedAt : null;
+    // Lo que publicó el gerente caduca: un dato viejo es peor que no tener dato.
+    if (ov && age != null) {
+      base.stale = age > FRESH.stale;
+      base.expired = age > FRESH.expire;
+      if (base.stale) base.queue = null;
+    }
+    var reps = (cache.reports[st.id] || []).filter(function (x) { return now - x.at < FRESH.queue; });
     var last = reps[reps.length - 1];
     if (last && (!ov || !base.updatedAt || last.at >= base.updatedAt)) {
       base.queue = last.status;
       base.queueReportedAt = last.at;
-      base.queueReports = reps.filter(function (x) { return Date.now() - x.at < 3 * 3600000; }).length;
+      base.queueReports = reps.length;
       base.unknown = false;
     }
+    var hasFuel = FUELS.some(function (f) { var s = base.fuels[f.key].status; return s === "ok" || s === "low"; });
+    base.restocked = !!(base.restockedAt && now - base.restockedAt < FRESH.restock && hasFuel && base.open && !base.expired);
     return base;
   }
 
@@ -194,6 +209,7 @@
 
   function overallTone(state) {
     if (state.unknown) return "na";
+    if (state.expired) return state.queueReportedAt ? (state.queue === "empty" ? "out" : state.queue === "long" ? "warn" : "na") : "na";
     if (!state.open) return "out";
     var statuses = FUELS.map(function (f) { return state.fuels[f.key].status; });
     var any = statuses.some(function (s) { return s === "ok" || s === "low"; });
@@ -220,7 +236,7 @@
       name: r.name, open: r.open, hours: r.hours, queue: r.queue, acceptsApp: r.accepts_app,
       modality: r.modality, rate: +r.rate, fuels: r.fuels || {},
       pm: { bank: r.pm_bank, phone: r.pm_phone, doc: r.pm_doc, holder: r.pm_holder },
-      updatedAt: Date.parse(r.updated_at), updatedBy: "gerente"
+      updatedAt: Date.parse(r.updated_at), restockedAt: r.restocked_at ? Date.parse(r.restocked_at) : null, updatedBy: "gerente"
     };
   }
   function rowToPayment(r) {
@@ -228,7 +244,7 @@
       id: r.id, code: r.code, stationId: r.station_id, stationName: r.station_name, fuel: r.fuel,
       liters: +r.liters, priceUsd: +r.price_usd, rate: +r.rate, totalUsd: +r.total_usd, totalBs: +r.total_bs,
       feeUsd: +r.fee_usd, payerBank: r.payer_bank, payerPhone: r.payer_phone, payerDoc: r.payer_doc,
-      reference: r.reference, status: r.status, rejectReason: r.reject_reason,
+      reference: r.reference, vehicle: r.vehicle || "", status: r.status, rejectReason: r.reject_reason,
       createdAt: Date.parse(r.created_at), verifiedAt: r.verified_at ? Date.parse(r.verified_at) : null,
       dispatchedAt: r.dispatched_at ? Date.parse(r.dispatched_at) : null,
       mine: cache.user ? r.driver_id === cache.user.id : false
@@ -324,6 +340,7 @@
       modality: patch.modality, rate: patch.rate, fuels: patch.fuels,
       pm_bank: patch.pm.bank, pm_phone: patch.pm.phone, pm_doc: patch.pm.doc, pm_holder: patch.pm.holder
     };
+    if (patch.restockedAt) row.restocked_at = new Date(patch.restockedAt).toISOString();
     return sb.from("stations").update(row).eq("id", id).select().then(function (res) {
       if (res.error) throw sbErr(res.error);
       if (!res.data.length) throw err("No tienes permiso para editar esta estación.");
@@ -373,7 +390,7 @@
         id: "p" + Date.now().toString(36), code: makeCode(), stationId: p.stationId, stationName: p.stationName,
         fuel: p.fuel, liters: p.liters, priceUsd: price, rate: rate, totalUsd: total, totalBs: round2(p.liters * price * rate),
         feeUsd: round2(total * FEE), payerBank: p.payerBank, payerPhone: p.payerPhone, payerDoc: p.payerDoc,
-        reference: p.reference, status: "por_verificar", createdAt: Date.now(), mine: true
+        reference: p.reference, vehicle: p.vehicle || "", status: "por_verificar", createdAt: Date.now(), mine: true
       };
       list.unshift(pay);
       write(KEYS.payments, list.slice(0, 300));
@@ -383,7 +400,7 @@
     return ensureUser().then(function () {
       return sb.from("payments").insert({
         station_id: p.stationId, fuel: p.fuel, liters: p.liters, payer_bank: p.payerBank,
-        payer_phone: p.payerPhone, payer_doc: p.payerDoc, reference: p.reference
+        payer_phone: p.payerPhone, payer_doc: p.payerDoc, reference: p.reference, vehicle: p.vehicle || ""
       }).select().single();
     }).then(function (res) {
       if (res.error) throw sbErr(res.error);
@@ -536,7 +553,7 @@
 
   window.TYStore = {
     LIVE: LIVE, FUELS: FUELS, AVAIL: AVAIL, QUEUE: QUEUE, MODALITY: MODALITY, STATUS: STATUS,
-    BANKS: BANKS, bankName: bankName, DEFAULTS: DEFAULTS,
+    BANKS: BANKS, bankName: bankName, DEFAULTS: DEFAULTS, FRESH: FRESH,
     init: init, refresh: refresh, settings: settings, setSettings: setSettings,
     stateOf: stateOf, pmReady: pmReady, overallTone: overallTone, saveStation: saveStation, addReport: addReport,
     payments: payments, createPayment: createPayment, setPaymentStatus: setPaymentStatus,

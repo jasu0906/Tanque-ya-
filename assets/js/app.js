@@ -45,6 +45,46 @@
   var PUMP = '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 21V5a2 2 0 0 1 2-2h7a2 2 0 0 1 2 2v6h1a2 2 0 0 1 2 2v4a1 1 0 0 0 2 0V9.4l-2.7-2.7 1.4-1.4L22 8.6V17a3 3 0 0 1-6 0v-4h-1v8H4Zm2-16v5h7V5H6Z"/></svg>';
   var TONE_LABEL = { ok: "Hay combustible", warn: "Poco o cola larga", out: "Sin combustible", na: "Sin reportar" };
 
+  var STAR = '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="m12 2.6 2.9 6 6.6.9-4.8 4.6 1.2 6.5L12 17.5l-5.9 3.1 1.2-6.5L2.5 9.5l6.6-.9 2.9-6Z"/></svg>';
+
+  /* ---------- favoritas (se guardan en este teléfono) ---------- */
+  var FAV_KEY = "ty.favs.v1";
+  var favs = (function () { try { return JSON.parse(window.localStorage.getItem(FAV_KEY)) || {}; } catch (e) { return {}; } })();
+  function isFav(id) { return !!favs[id]; }
+  function toggleFav(id) {
+    if (favs[id]) delete favs[id]; else favs[id] = 1;
+    try { window.localStorage.setItem(FAV_KEY, JSON.stringify(favs)); } catch (e) {}
+    return !!favs[id];
+  }
+
+  /* ---------- compartir el estado de una estación ---------- */
+  function shareText(st, state) {
+    var rate = state.rate || S.DEFAULTS.rate;
+    var lines = ["⛽ " + st.name + (st.city ? " (" + st.city + ")" : "")];
+    if (state.restocked) lines.push("Llegó combustible " + ago(state.restockedAt));
+    if (!state.unknown && !state.expired) {
+      if (!state.open) lines.push("Cerrada ahora");
+      FUELS.forEach(function (f) {
+        var fs = state.fuels[f.key];
+        if (!fs.status || fs.status === "none") return;
+        lines.push(f.label + ": " + S.AVAIL[fs.status].label + (fs.price != null && fs.status !== "out" ? " · " + usd(fs.price) + " (" + bs(fs.price * rate) + ") por litro" : ""));
+      });
+    }
+    if (state.queue) lines.push(S.QUEUE[state.queue].label + (state.queueReportedAt ? " (" + ago(state.queueReportedAt) + ")" : ""));
+    if (state.updatedAt && !state.unknown) lines.push((state.simulated ? "Dato de demostración · " : "Actualizado ") + ago(state.updatedAt));
+    return lines.join("\n");
+  }
+  function shareStation(st) {
+    var state = S.stateOf(st);
+    var url = location.href.split("#")[0] + "#estacion-" + st.id;
+    var text = shareText(st, state);
+    if (navigator.share) {
+      navigator.share({ title: "Tanque ya · " + st.name, text: text, url: url }).catch(function () {});
+    } else {
+      window.open("https://wa.me/?text=" + encodeURIComponent(text + "\n" + url), "_blank", "noopener");
+    }
+  }
+
   /* =========================================================
    * Estado de la app
    * ======================================================= */
@@ -210,11 +250,12 @@
 
   function passes(st, state) {
     var f = app.filters;
-    var has = function (k) { var s = state.fuels[k].status; return s === "ok" || s === "low"; };
+    var has = function (k) { var s = state.fuels[k].status; return !state.expired && (s === "ok" || s === "low"); };
     if (f.gas && !(state.open && (has("g91") || has("g95")))) return false;
     if (f.diesel && !(state.open && has("diesel"))) return false;
     if (f.noqueue && !(state.queue === "none" || state.queue === "short")) return false;
-    if (f.pay && !(state.acceptsApp && state.open)) return false;
+    if (f.pay && !(state.acceptsApp && state.open && !state.expired)) return false;
+    if (f.fav && !isFav(st.id)) return false;
     return true;
   }
 
@@ -259,15 +300,19 @@
       if (!fs.status || fs.status === "none") return "";
       return '<span class="fpill fpill--' + S.AVAIL[fs.status].tone + '" title="' + esc(f.label + ": " + S.AVAIL[fs.status].label) + '">' + esc(f.short) + "</span>";
     }).join("");
-    var price = state.fuels.g91.price != null ? usd(state.fuels.g91.price) + "<small>/L</small>" : "";
+    var price = state.fuels.g91.price != null && !state.expired ? usd(state.fuels.g91.price) + "<small>/L</small>" : "";
     var q = state.queue ? '<span class="qtag qtag--' + S.QUEUE[state.queue].tone + '">' + esc(S.QUEUE[state.queue].label) + "</span>" : "";
     return '<li><button type="button" class="scard" data-id="' + esc(st.id) + '">' +
       '<span class="scard__pin pin pin--' + tone + '">' + PUMP + "</span>" +
       '<span class="scard__body">' +
-      '<span class="scard__row"><strong class="scard__name">' + esc(st.name) + "</strong>" + dist + "</span>" +
+      '<span class="scard__row"><strong class="scard__name">' + (isFav(st.id) ? '<i class="star-on" title="Favorita">' + STAR + "</i>" : "") + esc(st.name) + "</strong>" + dist + "</span>" +
       '<span class="scard__addr">' + esc([st.address, st.city].filter(Boolean).join(" · ") || (st.brand || "Venezuela")) + "</span>" +
       '<span class="scard__row scard__meta">' +
-      (state.unknown ? '<span class="muted">Sin reportes todavía</span>' : (state.open ? "" : '<span class="qtag qtag--out">Cerrada</span>') + fuels + q) +
+      (state.unknown ? '<span class="muted">Sin reportes todavía</span>'
+        : state.expired ? '<span class="muted">Sin actualizar ' + esc(ago(state.updatedAt)) + "</span>" + q
+        : (state.open ? "" : '<span class="qtag qtag--out">Cerrada</span>') +
+          (state.restocked ? '<span class="qtag qtag--new">Llegó ' + esc(ago(state.restockedAt)) + "</span>" : "") + fuels + q +
+          (state.stale ? '<span class="muted">· ' + esc(ago(state.updatedAt)) + "</span>" : "")) +
       '<span class="scard__price">' + price + "</span></span>" +
       "</span></button></li>";
   }
@@ -368,10 +413,16 @@
         return '<button type="button" class="seg__btn" data-report="' + k + '">' + esc(S.QUEUE[k].label) + "</button>";
       }).join("") + "</div></div>";
 
-    var canPay = state.acceptsApp && state.open && S.pmReady(state) && FUELS.some(function (f) {
+    var freshNote = state.expired ? '<div class="alert alert--warn"><span><b>La estación no actualiza desde ' + esc(ago(state.updatedAt)) + '.</b> No te fíes de estos datos: mira los reportes de cola o llama antes de ir.</span></div>'
+      : state.stale ? '<div class="alert alert--warn"><span><b>Dato de ' + esc(ago(state.updatedAt)) + '.</b> Puede haber cambiado.</span></div>' : "";
+    var restockNote = state.restocked ? '<div class="alert alert--ok"><span><b>Llegó combustible ' + esc(ago(state.restockedAt)) + ".</b> Avisó la estación.</span></div>" : "";
+    var fav = isFav(st.id);
+
+    var canPay = !state.expired && state.acceptsApp && state.open && S.pmReady(state) && FUELS.some(function (f) {
       var s = state.fuels[f.key].status; return (s === "ok" || s === "low") && state.fuels[f.key].price != null;
     });
     var payNote = !state.acceptsApp || !S.pmReady(state) ? "Esta estación todavía no acepta pagos con Tanque ya."
+      : state.expired ? "No se puede pagar hasta que la estación actualice sus datos."
       : !state.open ? "La estación está cerrada ahora."
       : !canPay ? "No hay combustible disponible para pagar." : "Pagas con Pago Móvil directo a la estación y te damos un código para la bomba.";
 
@@ -390,6 +441,7 @@
       '<span class="badge badge--na">' + esc(S.MODALITY[state.modality] || "") + "</span>" +
       "</div></div></div>" +
       '<p class="source ' + (state.simulated ? "source--sim" : "") + '">' + esc(source) + "</p>" +
+      restockNote + freshNote +
       '<div class="card"><div class="card__head"><h3>Combustible y precio</h3><span class="muted small">Tasa: ' + bs(rate) + " por $</span></div>" +
       (fuelRows || '<p class="muted">Sin datos de combustible.</p>') + "</div>" +
       queueBlock +
@@ -399,6 +451,10 @@
       '<a class="btn btn--ghost btn--lg" href="' + gmaps + '" target="_blank" rel="noopener">Cómo llegar</a>' +
       "</div>" +
       '<p class="muted small center">' + esc(payNote) + "</p>" +
+      '<div class="detail__more">' +
+      '<button type="button" class="btn btn--ghost" id="shareBtn"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M18 16a3 3 0 0 0-2.4 1.2l-6.7-3.6a3 3 0 0 0 0-1.2l6.7-3.6A3 3 0 1 0 15 7c0 .2 0 .4.1.6l-6.7 3.6a3 3 0 1 0 0 3.6l6.7 3.6A3 3 0 1 0 18 16Z"/></svg>Compartir</button>' +
+      '<button type="button" class="btn btn--ghost' + (fav ? " is-fav" : "") + '" id="favBtn" aria-pressed="' + fav + '">' + STAR + (fav ? "En favoritas" : "Guardar") + "</button>" +
+      "</div>" +
       '<a class="manage-link" href="#gerentes" data-manage="' + esc(st.id) + '">¿Eres el gerente de esta estación? Actualiza sus datos</a>' +
       "</div>";
 
@@ -409,6 +465,14 @@
 
     $("#backBtn").onclick = closeStation;
     $("#payBtn").onclick = function () { openPayment(st.id); };
+    $("#shareBtn").onclick = function () { shareStation(st); };
+    $("#favBtn").onclick = function () {
+      var on = toggleFav(st.id);
+      renderDetail();
+      if (app.filters.fav) renderMarkers();
+      renderList();
+      toast(on ? "Guardada en tus favoritas." : "Quitada de tus favoritas.", "ok");
+    };
     $all("[data-report]", $("#detailPane")).forEach(function (b) {
       b.onclick = function () {
         b.disabled = true;
@@ -437,7 +501,7 @@
     try { return JSON.parse(window.localStorage.getItem(PAYER_KEY)) || {}; } catch (e) { return {}; }
   }
   function rememberPayer(p) {
-    try { window.localStorage.setItem(PAYER_KEY, JSON.stringify({ bank: p.bank, phone: p.phone, doc: p.doc })); } catch (e) {}
+    try { window.localStorage.setItem(PAYER_KEY, JSON.stringify({ bank: p.bank, phone: p.phone, doc: p.doc, vehicle: p.vehicle || "" })); } catch (e) {}
   }
 
   function openPayment(id) {
@@ -447,7 +511,7 @@
     var demoPayer = S.LIVE ? {} : { bank: "0134", phone: "04145550101", doc: "V-12345678", reference: String(Date.now()).slice(-8) };
     pay = {
       st: st, state: state, step: 1, fuel: first && first.key, mode: "liters", amount: 20,
-      payer: Object.assign({ bank: "", phone: "", doc: "", reference: "" }, demoPayer, saved, { reference: demoPayer.reference || "" })
+      payer: Object.assign({ bank: "", phone: "", doc: "", reference: "", vehicle: "" }, demoPayer, saved, { reference: demoPayer.reference || "" })
     };
     renderPayment();
   }
@@ -526,6 +590,7 @@
         "</select></label>" +
         '<label class="field"><span>Tu teléfono</span><input id="pfPhone" inputmode="tel" autocomplete="tel" placeholder="0414 555 0101" value="' + esc(fmtPhone(p.phone)) + '" required></label>' +
         '<label class="field"><span>Tu cédula</span><input id="pfDoc" autocomplete="off" placeholder="V-12345678" value="' + esc(p.doc) + '" required></label>' +
+        '<label class="field field--full"><span>Placa del vehículo (opcional)</span><input id="pfVehicle" autocomplete="off" autocapitalize="characters" maxlength="10" placeholder="Ej.: AB123CD" value="' + esc(p.vehicle || "") + '"><small class="muted">Sirve para llevar la cuenta de cuánto gasta cada vehículo.</small></label>' +
         '<p class="form-error field--full" id="pfError" hidden></p>' +
         "</form>" +
         summary(t, true) +
@@ -598,7 +663,8 @@
           reference: ($("#pfRef").value || "").replace(/\D/g, ""),
           bank: $("#pfBank").value,
           phone: ($("#pfPhone").value || "").replace(/\D/g, ""),
-          doc: ($("#pfDoc").value || "").toUpperCase().replace(/\s+/g, "")
+          doc: ($("#pfDoc").value || "").toUpperCase().replace(/\s+/g, ""),
+          vehicle: ($("#pfVehicle").value || "").toUpperCase().replace(/[^A-Z0-9]/g, "").slice(0, 10)
         };
       };
       $all("#payerForm input, #payerForm select", body).forEach(function (el) { el.addEventListener("input", keep); el.addEventListener("change", keep); });
@@ -619,7 +685,7 @@
         pay.step = 4; renderPayment();
         S.createPayment({
           stationId: snapshot.st.id, stationName: snapshot.st.name, fuel: snapshot.fuel, liters: t.liters,
-          payerBank: p.bank, payerPhone: p.phone, payerDoc: p.doc, reference: p.reference, _state: snapshot.state
+          payerBank: p.bank, payerPhone: p.phone, payerDoc: p.doc, reference: p.reference, vehicle: p.vehicle, _state: snapshot.state
         }).then(function (result) {
           pay = null;
           renderReceipts();
@@ -705,6 +771,7 @@
   function renderReceipts() {
     var list = S.payments().filter(function (p) { return p.mine; });
     var root = $("#receiptList");
+    renderSpend(list);
     if (!list.length) {
       root.innerHTML = '<div class="empty-state"><div class="empty-state__icon">' + PUMP + "</div><h2>Todavía no has pagado combustible</h2>" +
         '<p class="muted">Busca una estación en el mapa, elige cuánto quieres y paga con Pago Móvil. Cuando la estación lo confirme, te daremos un código para la bomba.</p>' +
@@ -717,12 +784,52 @@
       return '<button type="button" class="rcard rcard--' + p.status + '" data-code="' + esc(p.code) + '">' +
         '<span class="rcard__qr">' + (showQr ? qrSvg("TANQUEYA:" + p.code, 2) : '<span class="rcard__wait rcard__wait--' + st.tone + '">' + (p.status === "rechazado" ? ICON_X : ICON_CLOCK) + "</span>") + "</span>" +
         '<span class="rcard__body"><strong>' + esc(p.stationName) + "</strong>" +
-        '<span class="muted">' + esc(fuelLabel(p.fuel)) + " · " + nf1.format(p.liters) + " L · " + ago(p.createdAt) + "</span>" +
+        '<span class="muted">' + esc(fuelLabel(p.fuel)) + " · " + nf1.format(p.liters) + " L · " + ago(p.createdAt) + (p.vehicle ? " · " + esc(p.vehicle) : "") + "</span>" +
         '<span class="rcard__code">' + (showQr ? esc(p.code) : "Ref. " + esc(p.reference)) + "</span></span>" +
         '<span class="rcard__right"><strong>' + bs(p.totalBs) + "</strong>" +
         '<span class="badge badge--' + st.tone + '">' + esc(st.label) + "</span></span></button>";
     }).join("");
     $all(".rcard", root).forEach(function (b) { b.onclick = function () { showReceipt(b.getAttribute("data-code"), false); }; });
+  }
+
+  /* ---------- control de gasto del mes (por vehículo si hay placas) ---------- */
+  function renderSpend(list) {
+    var box = $("#spendBox");
+    var m0 = new Date(); m0.setDate(1); m0.setHours(0, 0, 0, 0);
+    var good = list.filter(function (p) { return (p.status === "aprobado" || p.status === "despachado") && p.createdAt >= m0.getTime(); });
+    if (!good.length) { box.innerHTML = ""; return; }
+    var sum = function (arr, k) { return arr.reduce(function (a, p) { return a + (p[k] || 0); }, 0); };
+    var by = {};
+    good.forEach(function (p) { var v = p.vehicle || "Sin placa"; (by[v] = by[v] || []).push(p); });
+    var keys = Object.keys(by).sort(function (a, b) { return sum(by[b], "totalUsd") - sum(by[a], "totalUsd"); });
+    var month = new Date().toLocaleString("es-VE", { month: "long" });
+    box.innerHTML = '<section class="card spend"><div class="card__head"><h2>Tu gasto de ' + esc(month) + "</h2>" +
+      '<button type="button" class="btn btn--ghost btn--sm" id="csvBtn">Descargar para Excel</button></div>' +
+      '<div class="kpis kpis--3">' +
+      kpi("Gastado", usd(sum(good, "totalUsd")), "", bs(sum(good, "totalBs"))) +
+      kpi("Litros", nf1.format(sum(good, "liters")), "", good.length + (good.length === 1 ? " carga" : " cargas")) +
+      kpi("Precio promedio", usd(sum(good, "totalUsd") / (sum(good, "liters") || 1)), "", "por litro") + "</div>" +
+      (keys.length > 1 || keys[0] !== "Sin placa" ? '<div class="table-wrap"><table class="table"><thead><tr><th>Vehículo</th><th>Cargas</th><th>Litros</th><th>Gastado</th></tr></thead><tbody>' +
+        keys.map(function (k) {
+          return "<tr><td><b>" + esc(k) + "</b></td><td>" + by[k].length + "</td><td>" + nf1.format(sum(by[k], "liters")) + " L</td><td>" + usd(sum(by[k], "totalUsd")) + " · " + bs(sum(by[k], "totalBs")) + "</td></tr>";
+        }).join("") + "</tbody></table></div>"
+        : '<p class="muted small">Escribe la placa al pagar y aquí verás cuánto gasta cada vehículo.</p>') +
+      "</section>";
+    $("#csvBtn").onclick = function () { downloadCsv(list); };
+  }
+  function downloadCsv(list) {
+    var q = function (v) { return '"' + String(v == null ? "" : v).replace(/"/g, '""') + '"'; };
+    var n = function (v) { return String(v == null ? "" : v).replace(".", ","); };
+    var rows = [["Fecha", "Estación", "Vehículo", "Combustible", "Litros", "Precio por litro ($)", "Total ($)", "Total (Bs)", "Tasa", "Referencia", "Código", "Estado"]].concat(
+      list.map(function (p) {
+        return [new Date(p.createdAt).toLocaleString("es-VE"), p.stationName, p.vehicle || "", fuelLabel(p.fuel), n(p.liters), n(p.priceUsd), n(p.totalUsd), n(p.totalBs), n(p.rate), p.reference, p.code, S.STATUS[p.status].label];
+      }));
+    var csv = "\ufeff" + rows.map(function (r) { return r.map(q).join(";"); }).join("\r\n");
+    var a = document.createElement("a");
+    a.href = URL.createObjectURL(new Blob([csv], { type: "text/csv;charset=utf-8" }));
+    a.download = "tanque-ya-pagos.csv";
+    document.body.appendChild(a); a.click(); document.body.removeChild(a);
+    setTimeout(function () { URL.revokeObjectURL(a.href); }, 2000);
   }
 
   /* =========================================================
@@ -931,8 +1038,19 @@
       '<div class="dash__head"><div>' +
       '<p class="eyebrow">Panel de estación' + (S.LIVE ? "" : " · demostración") + "</p><h1>" + esc(st.name) + "</h1>" +
       '<p class="muted">' + esc([st.address, st.city].filter(Boolean).join(" · ")) + " · Última actualización " + esc(ago(state.updatedAt)) + (state.simulated ? " (simulada)" : "") + "</p></div>" +
-      '<div class="dash__head-actions"><button type="button" class="btn btn--ghost" id="viewOnMap">Ver en el mapa</button>' +
+      '<div class="dash__head-actions"><button type="button" class="btn btn--ghost" id="shareDash">Compartir estado</button>' +
+      '<button type="button" class="btn btn--ghost" id="viewOnMap">Ver en el mapa</button>' +
       '<button type="button" class="btn btn--ghost" id="logoutBtn">Salir</button></div></div>' +
+
+      '<section class="card card--span quick-card' + (state.stale && !state.simulated ? " quick-card--stale" : "") + '">' +
+      '<div class="card__head"><h2>Actualización rápida</h2><span class="muted small">Un toque y se publica al momento</span></div>' +
+      (state.stale && !state.simulated ? '<p class="alert alert--warn"><span><b>Llevas ' + esc(ago(state.updatedAt).replace("hace ", "")) + " sin actualizar.</b> " +
+        (state.expired ? "Los conductores ya no ven tus datos ni pueden pagarte." : "Los conductores ven tus datos como viejos.") + " Toca una de estas opciones.</span></p>" : "") +
+      '<div class="quick3">' +
+      '<button type="button" class="qbtn qbtn--ok" data-quick-up="restock"><strong>Llegó la gandola</strong><small>Hay combustible · avisa a los conductores</small></button>' +
+      '<button type="button" class="qbtn" data-quick-up="same"><strong>Todo sigue igual</strong><small>Confirma que los datos están al día</small></button>' +
+      '<button type="button" class="qbtn qbtn--out" data-quick-up="out"><strong>Se acabó</strong><small>Sin combustible por ahora</small></button>' +
+      "</div></section>" +
 
       '<div class="kpis" id="kpiBox"></div>' +
 
@@ -1111,6 +1229,38 @@
       S.signOut().then(function () { draft = null; renderManager(); });
     };
     $("#viewOnMap").onclick = function () { location.hash = "#estacion-" + st.id; };
+    $("#shareDash").onclick = function () { shareStation(st); };
+    $all("[data-quick-up]", root).forEach(function (b) {
+      b.onclick = function () {
+        if (draft.dirty && b.getAttribute("data-armed") !== "1") {
+          b.setAttribute("data-armed", "1");
+          toast("Tienes cambios sin publicar que se perderán. Toca otra vez para continuar.");
+          return;
+        }
+        var kind = b.getAttribute("data-quick-up");
+        var d = stationDraft(st);
+        var patch = { open: d.open, queue: d.queue, acceptsApp: d.acceptsApp, hours: d.hours, modality: d.modality, rate: d.rate, fuels: d.fuels, pm: d.pm };
+        if (kind === "restock") {
+          FUELS.forEach(function (f) { if (patch.fuels[f.key].status !== "none") patch.fuels[f.key].status = "ok"; });
+          patch.open = true;
+          if (patch.queue === "empty") patch.queue = "none";
+          patch.restockedAt = Date.now();
+        } else if (kind === "out") {
+          FUELS.forEach(function (f) { if (patch.fuels[f.key].status !== "none") patch.fuels[f.key].status = "out"; });
+          patch.queue = "empty";
+        }
+        $all("[data-quick-up]", root).forEach(function (x) { x.disabled = true; });
+        S.saveStation(st.id, patch).then(function () {
+          draft = null;
+          refreshStation(st.id);
+          renderDashboard(st);
+          toast(kind === "restock" ? "Publicado: los conductores ya ven que llegó combustible." : kind === "out" ? "Publicado: la estación aparece sin combustible." : "Confirmado. Tus datos aparecen al día.", "ok");
+        }).catch(function (e) {
+          $all("[data-quick-up]", root).forEach(function (x) { x.disabled = false; });
+          toast(e.userMessage || "No se pudo publicar.", "err");
+        });
+      };
+    });
 
     $("#validateForm").onsubmit = function (e) {
       e.preventDefault();

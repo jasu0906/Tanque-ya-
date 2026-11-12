@@ -31,6 +31,8 @@ create table if not exists public.stations (
   pm_holder   text not null default '',          -- nombre del titular
   updated_at  timestamptz not null default now()
 );
+-- Última vez que el gerente avisó de que llegó combustible (la gandola).
+alter table public.stations add column if not exists restocked_at timestamptz;
 
 create table if not exists public.station_managers (
   user_id    uuid not null references auth.users (id) on delete cascade,
@@ -90,6 +92,11 @@ create table if not exists public.payments (
   dispatched_at timestamptz,
   unique (station_id, reference)   -- una referencia no se puede usar dos veces en la misma estación
 );
+-- Placa del vehículo (opcional): sirve al conductor o a la flota para llevar su control de gasto.
+alter table public.payments add column if not exists vehicle text not null default '';
+do $$ begin
+  alter table public.payments add constraint payments_vehicle_len check (char_length(vehicle) <= 10);
+exception when duplicate_object then null; end $$;
 create index if not exists payments_station on public.payments (station_id, created_at desc);
 create index if not exists payments_driver on public.payments (driver_id, created_at desc);
 
@@ -127,6 +134,7 @@ begin
   if not st.accepts_app or not st.open then raise exception 'La estación no está aceptando pagos ahora'; end if;
   if st.pm_bank = '' or st.pm_phone = '' or st.pm_doc = '' then raise exception 'La estación no tiene sus datos de Pago Móvil'; end if;
   if st.rate <= 0 then raise exception 'La estación no tiene la tasa del día'; end if;
+  if st.updated_at < now() - interval '24 hours' then raise exception 'La estación no ha actualizado sus datos hoy'; end if;
   f := st.fuels -> new.fuel;
   if f is null or (f ->> 'status') not in ('ok', 'low') or coalesce((f ->> 'price')::numeric, 0) <= 0 then
     raise exception 'Ese combustible no está disponible';
@@ -141,6 +149,7 @@ begin
   new.total_bs      := round(new.liters * new.price_usd * st.rate, 2);
   new.fee_usd       := round(new.total_usd * 0.01, 2);
   new.status        := 'por_verificar';
+  new.vehicle       := upper(regexp_replace(coalesce(new.vehicle, ''), '[^A-Za-z0-9]', '', 'g'));
   new.reject_reason := null;
   new.verified_at   := null;
   new.dispatched_at := null;
@@ -164,10 +173,10 @@ create or replace function public.guard_payment()
 returns trigger language plpgsql as $$
 begin
   if (new.id, new.code, new.station_id, new.station_name, new.driver_id, new.fuel, new.liters, new.price_usd, new.rate,
-      new.total_usd, new.total_bs, new.fee_usd, new.payer_bank, new.payer_phone, new.payer_doc, new.reference, new.created_at)
+      new.total_usd, new.total_bs, new.fee_usd, new.payer_bank, new.payer_phone, new.payer_doc, new.reference, new.vehicle, new.created_at)
      is distinct from
      (old.id, old.code, old.station_id, old.station_name, old.driver_id, old.fuel, old.liters, old.price_usd, old.rate,
-      old.total_usd, old.total_bs, old.fee_usd, old.payer_bank, old.payer_phone, old.payer_doc, old.reference, old.created_at) then
+      old.total_usd, old.total_bs, old.fee_usd, old.payer_bank, old.payer_phone, old.payer_doc, old.reference, old.vehicle, old.created_at) then
     raise exception 'Solo se puede cambiar el estado del pago';
   end if;
   if new.status = old.status then return new; end if;

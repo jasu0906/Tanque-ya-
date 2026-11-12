@@ -7,7 +7,10 @@ Demo web para Venezuela con:
 - **Reportes de cola** hechos por los conductores.
 - **Panel para gerentes**: abrir o cerrar, disponibilidad por combustible, precio por litro, tasa del día, cola y horario.
 - **Pago con Pago Móvil directo a la estación**: el conductor paga desde la app de su banco con los datos de la estación, escribe la referencia y el gerente lo confirma al verlo en su cuenta. Luego el conductor recibe un código QR para la bomba.
-- **Mis pagos**: historial con los códigos QR.
+- **Mis pagos**: historial con los códigos QR, gasto del mes por vehículo (si se escribe la placa al pagar) y descarga para Excel.
+- **Actualización rápida para el gerente**: tres botones de un toque («Llegó la gandola», «Todo sigue igual», «Se acabó»).
+- **Datos con fecha de caducidad**: lo que publica una estación se marca como viejo a las 6 horas y deja de contar a las 24 (tampoco se puede pagar hasta que actualice). Los reportes de cola caducan a las 3 horas.
+- **Compartir** el estado de una estación por WhatsApp y guardar **favoritas**.
 - **Inversionistas**: resumen del problema, la solución, el modelo de negocio y las cifras de la propia demo.
 - **Instalable** como app (PWA) cuando se publica con HTTPS.
 
@@ -33,6 +36,8 @@ Para enseñarla desde el móvil, publícala con **GitHub Pages**: en el reposito
 | Estaciones sin datos | Valores simulados (marcados) | Aparecen como «Sin reportar» |
 
 ## Activar los pagos reales (Supabase)
+
+> Si ya ejecutaste una versión anterior de `supabase/schema.sql`, vuelve a ejecutarla: añade la columna `restocked_at` a las estaciones y `vehicle` a los pagos sin tocar los datos.
 
 Es gratis para empezar y no hace falta ningún servidor propio.
 
