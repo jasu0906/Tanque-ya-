@@ -78,7 +78,10 @@
     var state = S.stateOf(st);
     var url = location.href.split("#")[0] + "#estacion-" + st.id;
     var text = shareText(st, state);
-    if (navigator.share) {
+    if (EMBED) {
+      copyText(text);
+      toast("Texto copiado. Pégalo en WhatsApp.", "ok");
+    } else if (navigator.share) {
       navigator.share({ title: "Tanque ya · " + st.name, text: text, url: url }).catch(function () {});
     } else {
       window.open("https://wa.me/?text=" + encodeURIComponent(text + "\n" + url), "_blank", "noopener");
@@ -804,7 +807,7 @@
     var keys = Object.keys(by).sort(function (a, b) { return sum(by[b], "totalUsd") - sum(by[a], "totalUsd"); });
     var month = new Date().toLocaleString("es-VE", { month: "long" });
     box.innerHTML = '<section class="card spend"><div class="card__head"><h2>Tu gasto de ' + esc(month) + "</h2>" +
-      '<button type="button" class="btn btn--ghost btn--sm" id="csvBtn">Descargar para Excel</button></div>' +
+      (EMBED ? "" : '<button type="button" class="btn btn--ghost btn--sm" id="csvBtn">Descargar para Excel</button>') + "</div>" +
       '<div class="kpis kpis--3">' +
       kpi("Gastado", usd(sum(good, "totalUsd")), "", bs(sum(good, "totalBs"))) +
       kpi("Litros", nf1.format(sum(good, "liters")), "", good.length + (good.length === 1 ? " carga" : " cargas")) +
@@ -815,7 +818,7 @@
         }).join("") + "</tbody></table></div>"
         : '<p class="muted small">Escribe la placa al pagar y aquí verás cuánto gasta cada vehículo.</p>') +
       "</section>";
-    $("#csvBtn").onclick = function () { downloadCsv(list); };
+    if ($("#csvBtn")) $("#csvBtn").onclick = function () { downloadCsv(list); };
   }
   function downloadCsv(list) {
     var q = function (v) { return '"' + String(v == null ? "" : v).replace(/"/g, '""') + '"'; };
